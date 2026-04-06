@@ -102,6 +102,27 @@
           <p id="manualStats" class="summary-line"></p>
         </section>
 
+        <section class="card human-results-card">
+          <div class="card-head">
+            <h2>Human Results</h2>
+            <span id="humanResultsChip" class="chip chip-idle">loading</span>
+          </div>
+          <label>
+            <span>Config</span>
+            <select id="humanConfigSelect"></select>
+          </label>
+          <label>
+            <span>User submission</span>
+            <select id="humanAttemptSelect"></select>
+          </label>
+          <div class="button-row results-nav">
+            <button id="humanPrevButton" type="button" class="secondary">Prev submission</button>
+            <button id="humanNextButton" type="button" class="secondary">Next submission</button>
+          </div>
+          <p id="humanResultsSummary" class="summary-line"></p>
+          <p id="humanAttemptSummary" class="summary-line"></p>
+        </section>
+
         <section class="card summary-card">
           <h2>Summary</h2>
           <p id="statusText" class="status info">Loading grid...</p>

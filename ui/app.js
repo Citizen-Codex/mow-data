@@ -13,6 +13,10 @@ const state = {
   playTimer: null,
   manualPath: null,
   manualActive: false,
+  humanResults: null,
+  humanResultsError: null,
+  selectedHumanConfigId: null,
+  selectedHumanAttemptId: null,
 };
 
 const elements = {
@@ -33,6 +37,13 @@ const elements = {
   showManualButton: document.getElementById("showManualButton"),
   manualModeChip: document.getElementById("manualModeChip"),
   manualStats: document.getElementById("manualStats"),
+  humanResultsChip: document.getElementById("humanResultsChip"),
+  humanConfigSelect: document.getElementById("humanConfigSelect"),
+  humanAttemptSelect: document.getElementById("humanAttemptSelect"),
+  humanPrevButton: document.getElementById("humanPrevButton"),
+  humanNextButton: document.getElementById("humanNextButton"),
+  humanResultsSummary: document.getElementById("humanResultsSummary"),
+  humanAttemptSummary: document.getElementById("humanAttemptSummary"),
   prevButton: document.getElementById("prevButton"),
   playButton: document.getElementById("playButton"),
   nextButton: document.getElementById("nextButton"),
@@ -139,6 +150,157 @@ async function streamJsonLines(url, options = {}, { onMessage } = {}) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatDurationMs(durationMs) {
+  if (!Number.isFinite(durationMs)) {
+    return "-";
+  }
+
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)} ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)} s`;
+}
+
+function formatAverage(value) {
+  return Number.isFinite(value) ? value.toFixed(1) : "-";
+}
+
+function getHumanAttempts() {
+  return state.humanResults?.attempts || [];
+}
+
+function getHumanConfigMap() {
+  return new Map((state.humanResults?.configs || []).map((config) => [String(config.id), config]));
+}
+
+function getHumanConfigEntries() {
+  return (state.humanResults?.configs || [])
+    .map((config) => {
+      const attempts = getHumanAttempts()
+        .filter((attempt) => attempt.configId === config.id)
+        .sort((left, right) => left.id - right.id);
+
+      const durationTotal = attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0);
+      const moveTotal = attempts.reduce((sum, attempt) => sum + attempt.moveCount, 0);
+      const overlapTotal = attempts.reduce((sum, attempt) => sum + attempt.overlapCount, 0);
+      const completedCount = attempts.filter((attempt) => attempt.coverageComplete).length;
+
+      return {
+        ...config,
+        attempts,
+        submissionCount: attempts.length,
+        averageDurationMs: attempts.length ? durationTotal / attempts.length : 0,
+        averageMoveCount: attempts.length ? moveTotal / attempts.length : 0,
+        averageOverlapCount: attempts.length ? overlapTotal / attempts.length : 0,
+        completedCount,
+      };
+    })
+    .sort((left, right) => left.id - right.id);
+}
+
+function getSelectedHumanConfigEntry() {
+  return (
+    getHumanConfigEntries().find(
+      (config) => String(config.id) === String(state.selectedHumanConfigId)
+    ) || null
+  );
+}
+
+function getAttemptsForSelectedConfig() {
+  return getSelectedHumanConfigEntry()?.attempts || [];
+}
+
+function getHumanAttemptById(attemptId) {
+  return getHumanAttempts().find((attempt) => attempt.id === attemptId) || null;
+}
+
+function ensureHumanSelection() {
+  const configEntries = getHumanConfigEntries();
+  if (!configEntries.length) {
+    state.selectedHumanConfigId = null;
+    state.selectedHumanAttemptId = null;
+    return;
+  }
+
+  if (
+    !configEntries.some(
+      (config) => String(config.id) === String(state.selectedHumanConfigId)
+    )
+  ) {
+    state.selectedHumanConfigId = configEntries[0].id;
+  }
+
+  const attempts = getAttemptsForSelectedConfig();
+  if (!attempts.some((attempt) => attempt.id === state.selectedHumanAttemptId)) {
+    state.selectedHumanAttemptId = null;
+  }
+}
+
+function applyHumanAttempt(attemptId, { keepStatus = false } = {}) {
+  const attempt = getHumanAttemptById(attemptId);
+  if (!attempt) {
+    return;
+  }
+
+  const config = getHumanConfigMap().get(String(attempt.configId));
+  if (!config) {
+    return;
+  }
+
+  stopPlayback();
+  state.selectedHumanConfigId = attempt.configId;
+  state.selectedHumanAttemptId = attempt.id;
+  state.gridData = config.grid;
+  state.displayedSolution = attempt;
+  state.currentStep = attempt.moveCount;
+  state.optimalReference = null;
+  state.manualPath = null;
+  state.manualActive = false;
+
+  elements.sizeInput.value = String(config.size);
+  elements.seedInput.value = String(config.seed);
+  const removedRange = config.grid.removedFractionRange || [0.18, 0.42];
+  elements.removedMinInput.value = String(removedRange[0]);
+  elements.removedMaxInput.value = String(removedRange[1]);
+
+  if (!keepStatus) {
+    setStatus(
+      `Loaded human attempt ${attempt.id} for ${attempt.user} on ${config.label}.`,
+      "success"
+    );
+  }
+
+  render();
+}
+
+async function loadHumanResults() {
+  elements.humanResultsChip.textContent = "loading";
+  elements.humanResultsChip.className = "chip chip-idle";
+  elements.humanResultsSummary.textContent = "Loading human results from the CSV...";
+
+  try {
+    state.humanResults = await fetchJson("/api/human-results");
+    state.humanResultsError = null;
+    state.selectedHumanConfigId = null;
+    state.selectedHumanAttemptId = null;
+    render();
+  } catch (error) {
+    state.humanResults = null;
+    state.humanResultsError = error.message;
+    render();
+  }
+}
+
 function setBusy(busy) {
   const disabled = Boolean(busy);
   elements.generateButton.disabled = disabled;
@@ -146,6 +308,7 @@ function setBusy(busy) {
   elements.optimalButton.disabled = disabled;
   syncSolverControls();
   syncManualControls();
+  syncHumanResultsControls();
   syncPlaybackControls();
 }
 
@@ -175,6 +338,22 @@ function syncPlaybackControls() {
   elements.stepSlider.disabled = disabled;
 }
 
+function syncHumanResultsControls() {
+  const configEntries = getHumanConfigEntries();
+  const attempts = getAttemptsForSelectedConfig();
+  const currentIndex = attempts.findIndex(
+    (attempt) => attempt.id === state.selectedHumanAttemptId
+  );
+  const hasResults = configEntries.length > 0;
+
+  elements.humanConfigSelect.disabled = isBusy() || !hasResults;
+  elements.humanAttemptSelect.disabled = isBusy() || attempts.length === 0;
+  elements.humanPrevButton.disabled =
+    isBusy() || attempts.length <= 1 || currentIndex <= 0;
+  elements.humanNextButton.disabled =
+    isBusy() || attempts.length <= 1 || currentIndex === -1 || currentIndex >= attempts.length - 1;
+}
+
 async function generateGrid() {
   stopPlayback();
 
@@ -202,6 +381,7 @@ async function generateGrid() {
     state.currentStep = 0;
     state.manualPath = null;
     state.manualActive = false;
+    state.selectedHumanAttemptId = null;
     setStatus("Grid generated. Choose a solver or start a manual path.", "success");
   } catch (error) {
     setStatus(error.message, "error");
@@ -591,6 +771,77 @@ function handleManualKeydown(event) {
   attemptManualMove(move);
 }
 
+function renderHumanResults() {
+  if (state.humanResultsError) {
+    elements.humanResultsChip.textContent = "error";
+    elements.humanResultsChip.className = "chip chip-paused";
+    elements.humanResultsSummary.textContent = state.humanResultsError;
+    elements.humanAttemptSummary.textContent = "Attempt data unavailable.";
+    elements.humanConfigSelect.innerHTML = '<option value="">Unavailable</option>';
+    elements.humanAttemptSelect.innerHTML = '<option value="">Unavailable</option>';
+    syncHumanResultsControls();
+    return;
+  }
+
+  if (!state.humanResults) {
+    elements.humanResultsChip.textContent = "loading";
+    elements.humanResultsChip.className = "chip chip-idle";
+    elements.humanResultsSummary.textContent = "Loading human results from the CSV...";
+    elements.humanAttemptSummary.textContent = "Preparing config and submission selectors...";
+    elements.humanConfigSelect.innerHTML = '<option value="">Loading...</option>';
+    elements.humanAttemptSelect.innerHTML = '<option value="">Loading...</option>';
+    syncHumanResultsControls();
+    return;
+  }
+
+  ensureHumanSelection();
+  const configEntries = getHumanConfigEntries();
+  const selectedConfig = getSelectedHumanConfigEntry();
+  const attempts = getAttemptsForSelectedConfig();
+  const selectedAttempt = getHumanAttemptById(state.selectedHumanAttemptId);
+  const selectedAttemptIndex = attempts.findIndex(
+    (attempt) => attempt.id === state.selectedHumanAttemptId
+  );
+
+  elements.humanResultsChip.className = "chip chip-active";
+  elements.humanConfigSelect.innerHTML = configEntries
+    .map(
+      (config) =>
+        `<option value="${config.id}" ${String(config.id) === String(state.selectedHumanConfigId) ? "selected" : ""}>${escapeHtml(`${config.label} | ${config.size}x${config.size} | ${config.submissionCount} submissions`)}</option>`
+    )
+    .join("");
+  elements.humanAttemptSelect.innerHTML = attempts.length
+    ? [
+        `<option value="" ${selectedAttempt ? "" : "selected"}>Choose a submission...</option>`,
+        ...attempts.map(
+          (attempt, index) =>
+            `<option value="${attempt.id}" ${attempt.id === state.selectedHumanAttemptId ? "selected" : ""}>${escapeHtml(`${index + 1}. ${attempt.user} | ${formatDurationMs(attempt.durationMs)} | ${attempt.moveCount} moves | #${attempt.id}`)}</option>`
+        ),
+      ].join("")
+    : '<option value="">No submissions</option>';
+
+  if (!selectedConfig) {
+    elements.humanResultsChip.textContent = `${state.humanResults.attemptCount} runs`;
+    elements.humanResultsSummary.textContent = "No config data available.";
+    elements.humanAttemptSummary.textContent = "No submissions available.";
+    syncHumanResultsControls();
+    return;
+  }
+
+  elements.humanResultsChip.textContent = `${selectedConfig.submissionCount} submissions`;
+  elements.humanResultsSummary.textContent = `${selectedConfig.label} | size ${selectedConfig.size} | seed ${selectedConfig.seed} | submissions ${selectedConfig.submissionCount} | avg duration ${formatDurationMs(selectedConfig.averageDurationMs)} | avg moves ${formatAverage(selectedConfig.averageMoveCount)} | complete ${selectedConfig.completedCount}/${selectedConfig.submissionCount}`;
+
+  if (!selectedAttempt || selectedAttemptIndex === -1) {
+    elements.humanAttemptSummary.textContent = "Choose a submission to load it, or switch configs to auto-load the first run for that config.";
+    syncHumanResultsControls();
+    return;
+  }
+
+  elements.humanAttemptSummary.textContent = `Submission ${selectedAttemptIndex + 1}/${attempts.length} | user ${selectedAttempt.user} | duration ${formatDurationMs(selectedAttempt.durationMs)} | moves ${selectedAttempt.moveCount} | overlaps ${selectedAttempt.overlapCount} | coverage ${selectedAttempt.visitedOpenCells}/${selectedAttempt.openCellCount} ${selectedAttempt.coverageComplete ? "(complete)" : "(partial)"} | ${new Date(selectedAttempt.createdAt).toLocaleString()}`;
+
+  syncHumanResultsControls();
+}
+
 function renderStats() {
   if (!state.gridData) {
     elements.gridStats.textContent = "No grid loaded.";
@@ -603,7 +854,11 @@ function renderStats() {
     elements.solutionStats.textContent = "No displayed solution yet.";
   } else {
     const solution = state.displayedSolution;
-    elements.solutionStats.textContent = `Displayed: ${solution.solverLabel} (${solution.detailLabel}) | moves ${solution.moveCount} | overlaps ${solution.overlapCount} | coverage ${solution.visitedOpenCells}/${solution.openCellCount} ${solution.coverageComplete ? "(complete)" : "(partial)"}`;
+    const durationSummary =
+      solution.solverKey === "human"
+        ? ` | duration ${formatDurationMs(solution.durationMs)} | avg step ${formatDurationMs(solution.averageStepMs)}`
+        : "";
+    elements.solutionStats.textContent = `Displayed: ${solution.solverLabel} (${solution.detailLabel}) | moves ${solution.moveCount} | overlaps ${solution.overlapCount} | coverage ${solution.visitedOpenCells}/${solution.openCellCount} ${solution.coverageComplete ? "(complete)" : "(partial)"}${durationSummary}`;
   }
 
   if (!state.optimalReference) {
@@ -665,6 +920,7 @@ function renderStepControls() {
 }
 
 function render() {
+  renderHumanResults();
   renderStats();
   renderManualControls();
   renderStepControls();
@@ -921,6 +1177,66 @@ function stepToFull() {
   render();
 }
 
+function handleHumanConfigChange(event) {
+  if (event.target.value === "") {
+    return;
+  }
+
+  const configId = Number(event.target.value);
+  if (!Number.isInteger(configId)) {
+    return;
+  }
+
+  state.selectedHumanConfigId = configId;
+  const attempts = getAttemptsForSelectedConfig();
+  const firstAttempt = attempts[0] || null;
+  if (!firstAttempt) {
+    state.selectedHumanAttemptId = null;
+    render();
+    return;
+  }
+
+  applyHumanAttempt(firstAttempt.id);
+}
+
+function handleHumanAttemptChange(event) {
+  if (event.target.value === "") {
+    state.selectedHumanAttemptId = null;
+    render();
+    return;
+  }
+
+  const attemptId = Number(event.target.value);
+  if (!Number.isInteger(attemptId)) {
+    return;
+  }
+
+  applyHumanAttempt(attemptId);
+}
+
+function navigateHumanAttempt(direction) {
+  ensureHumanSelection();
+  const attempts = getAttemptsForSelectedConfig();
+  if (attempts.length <= 1) {
+    return;
+  }
+
+  const currentIndex = attempts.findIndex(
+    (attempt) => attempt.id === state.selectedHumanAttemptId
+  );
+  if (currentIndex === -1) {
+    applyHumanAttempt(attempts[0].id);
+    return;
+  }
+
+  const nextIndex = currentIndex + direction;
+  if (nextIndex < 0 || nextIndex >= attempts.length) {
+    return;
+  }
+
+  applyHumanAttempt(attempts[nextIndex].id);
+}
+
 elements.randomizeSeedButton.addEventListener("click", randomizeSeed);
 elements.generateButton.addEventListener("click", generateGrid);
 elements.solveButton.addEventListener("click", solveDisplayed);
@@ -930,6 +1246,10 @@ elements.resetManualButton.addEventListener("click", resetManualPath);
 elements.undoManualButton.addEventListener("click", () => undoManualMove());
 elements.showManualButton.addEventListener("click", () => showManualPath());
 elements.solverSelect.addEventListener("change", syncSolverControls);
+elements.humanConfigSelect.addEventListener("change", handleHumanConfigChange);
+elements.humanAttemptSelect.addEventListener("change", handleHumanAttemptChange);
+elements.humanPrevButton.addEventListener("click", () => navigateHumanAttempt(-1));
+elements.humanNextButton.addEventListener("click", () => navigateHumanAttempt(1));
 elements.prevButton.addEventListener("click", stepBack);
 elements.playButton.addEventListener("click", togglePlayback);
 elements.nextButton.addEventListener("click", stepForward);
@@ -945,3 +1265,4 @@ elements.stepSlider.addEventListener("input", (event) => {
 window.addEventListener("keydown", handleManualKeydown);
 
 generateGrid();
+loadHumanResults();

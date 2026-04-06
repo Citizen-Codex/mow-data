@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import random
 import sys
@@ -16,7 +17,7 @@ if __package__ in (None, ""):
 
 from src.grid import create_random_grid
 from src.optimal_solver import SearchProgress, optimal_solver
-from src.shared_types import Grid, Path as SolverPath, Point
+from src.shared_types import MOVE_DELTAS, Grid, Path as SolverPath, Point
 from src.solvers import find_start, random_walk_solver, snake_solver, spiral_solver
 from src.visualize import calculate_visit_counts, trace_path_points
 
@@ -25,12 +26,23 @@ SOLVER_OPTIONS = {"snake", "spiral", "random_walk", "optimal"}
 STRATEGY_OPTIONS = {"least_overlap", "shortest"}
 START_OPTIONS = {"auto", "down", "right"}
 OPTIMAL_PROGRESS_INTERVAL_SECONDS = 1.0
+DEFAULT_REMOVED_FRACTION_RANGE = (0.18, 0.42)
 SOLVER_LABELS = {
     "snake": "Snake",
     "spiral": "Spiral",
     "random_walk": "Random walk",
     "optimal": "Optimal",
 }
+HUMAN_RESULTS_PATH = (
+    FilePath(__file__).resolve().parents[1] / "data" / "mow_test_rows.csv"
+)
+HUMAN_CONFIG_SPECS = {
+    0: {"size": 7, "seed": 59},
+    1: {"size": 7, "seed": 59},
+    2: {"size": 10, "seed": 59},
+    3: {"size": 14, "seed": 3},
+}
+MOVE_CODES_BY_DELTA = {delta: move for move, delta in MOVE_DELTAS.items()}
 
 
 @dataclass(slots=True)
@@ -188,6 +200,129 @@ def build_grid_payload(
     }
 
 
+def build_human_config_payload(config_id: int) -> dict[str, object]:
+    spec = HUMAN_CONFIG_SPECS[config_id]
+    grid_payload = build_grid_payload(
+        spec["size"],
+        spec["seed"],
+        DEFAULT_REMOVED_FRACTION_RANGE,
+    )
+    return {
+        "id": config_id,
+        "label": f"Config {config_id}",
+        "size": spec["size"],
+        "seed": spec["seed"],
+        "grid": grid_payload,
+    }
+
+
+def human_points_to_path_string(points: list[Point]) -> str:
+    if len(points) < 2:
+        return ""
+
+    moves: list[str] = []
+    for previous, current in zip(points, points[1:]):
+        delta = (current[0] - previous[0], current[1] - previous[1])
+        moves.append(MOVE_CODES_BY_DELTA.get(delta, "?"))
+    return "".join(moves)
+
+
+def build_human_attempt_payload(
+    row: dict[str, str],
+    config_payload: dict[str, object],
+) -> dict[str, object]:
+    raw_points = json.loads(row["result"])
+    points = [(int(point["y"]), int(point["x"])) for point in raw_points]
+    timestamps_ms = [int(point["t"]) for point in raw_points]
+    visit_counts = calculate_visit_counts(points)
+    grid_payload = config_payload["grid"]
+    if not isinstance(grid_payload, dict):
+        raise ValueError("Config grid payload is invalid")
+
+    grid = grid_payload["grid"]
+    if not isinstance(grid, list):
+        raise ValueError("Config grid is invalid")
+
+    overlap_count = sum(count - 1 for count in visit_counts.values() if count > 1)
+    visited_open_cells = sum(
+        1
+        for row_index, col_index in visit_counts
+        if 0 <= row_index < len(grid)
+        and 0 <= col_index < len(grid[0])
+        and grid[row_index][col_index] == 1
+    )
+    open_cell_count = int(grid_payload["openCells"])
+    move_count = max(0, len(points) - 1)
+    duration_ms = timestamps_ms[-1] - timestamps_ms[0] if timestamps_ms else 0
+    average_step_ms = (duration_ms / move_count) if move_count else 0.0
+
+    return {
+        "id": int(row["id"]),
+        "createdAt": row["created_at"],
+        "user": row["user"],
+        "configId": int(row["config"]),
+        "configLabel": config_payload["label"],
+        "configSize": config_payload["size"],
+        "configSeed": config_payload["seed"],
+        "pathString": human_points_to_path_string(points),
+        "points": [list(point) for point in points],
+        "timestampsMs": timestamps_ms,
+        "moveCount": move_count,
+        "overlapCount": overlap_count,
+        "visitedOpenCells": visited_open_cells,
+        "openCellCount": open_cell_count,
+        "coverageComplete": visited_open_cells == open_cell_count,
+        "start": list(points[0]) if points else None,
+        "end": list(points[-1]) if points else None,
+        "durationMs": duration_ms,
+        "averageStepMs": average_step_ms,
+        "solverKey": "human",
+        "solverLabel": "Human",
+        "detailLabel": f"{row['user']} on {config_payload['label']}",
+    }
+
+
+def load_human_results_payload() -> dict[str, object]:
+    if not HUMAN_RESULTS_PATH.exists():
+        raise FileNotFoundError(f"Human results file not found: {HUMAN_RESULTS_PATH}")
+
+    config_payloads = {
+        config_id: build_human_config_payload(config_id)
+        for config_id in sorted(HUMAN_CONFIG_SPECS)
+    }
+    attempts: list[dict[str, object]] = []
+
+    with HUMAN_RESULTS_PATH.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            config_id = int(row["config"])
+            config_payload = config_payloads.get(config_id)
+            if config_payload is None:
+                raise ValueError(f"Unknown human-results config: {config_id}")
+            attempts.append(build_human_attempt_payload(row, config_payload))
+
+    attempts.sort(key=lambda attempt: int(attempt["id"]))
+    users = sorted({str(attempt["user"]) for attempt in attempts})
+    config_summaries = [
+        {
+            "id": config_payload["id"],
+            "label": config_payload["label"],
+            "size": config_payload["size"],
+            "seed": config_payload["seed"],
+            "grid": config_payload["grid"],
+        }
+        for config_payload in config_payloads.values()
+    ]
+
+    return {
+        "attemptCount": len(attempts),
+        "userCount": len(users),
+        "users": users,
+        "configs": config_summaries,
+        "attempts": attempts,
+    }
+
+
 class MowUIHandler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -200,6 +335,10 @@ class MowUIHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/grid":
             self._handle_grid(parsed.query)
+            return
+
+        if parsed.path == "/api/human-results":
+            self._handle_human_results()
             return
 
         if parsed.path == "/":
@@ -267,6 +406,18 @@ class MowUIHandler(SimpleHTTPRequestHandler):
             return
 
         payload = build_grid_payload(size, seed, (removed_min, removed_max))
+        self._send_json(payload)
+
+    def _handle_human_results(self) -> None:
+        try:
+            payload = load_human_results_payload()
+        except FileNotFoundError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+            return
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=500)
+            return
+
         self._send_json(payload)
 
     def _handle_solve(self) -> None:
