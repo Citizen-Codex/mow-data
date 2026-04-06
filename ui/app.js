@@ -87,6 +87,58 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+async function readErrorMessage(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return `Request failed with status ${response.status}`;
+  }
+
+  try {
+    const payload = JSON.parse(raw);
+    return payload.error || `Request failed with status ${response.status}`;
+  } catch {
+    return raw;
+  }
+}
+
+async function streamJsonLines(url, options = {}, { onMessage } = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  if (!response.body) {
+    throw new Error("Streaming responses are not available in this browser.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) {
+        onMessage?.(JSON.parse(line));
+      }
+      newlineIndex = buffer.indexOf("\n");
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  const trailing = buffer.trim();
+  if (trailing) {
+    onMessage?.(JSON.parse(trailing));
+  }
+}
+
 function setBusy(busy) {
   const disabled = Boolean(busy);
   elements.generateButton.disabled = disabled;
@@ -171,7 +223,7 @@ function confirmOptimalRuntime() {
   );
 }
 
-async function requestSolution(solver) {
+async function requestSolution(solver, options = {}) {
   if (!state.gridData) {
     throw new Error("Generate a grid first.");
   }
@@ -184,6 +236,10 @@ async function requestSolution(solver) {
     seed: Number(elements.seedInput.value),
   };
 
+  if (solver === "optimal") {
+    return requestOptimalSolution(body, options);
+  }
+
   const payload = await fetchJson("/api/solve", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -191,6 +247,42 @@ async function requestSolution(solver) {
   });
 
   return payload.solution;
+}
+
+async function requestOptimalSolution(body, { onProgress } = {}) {
+  let finalSolution = null;
+
+  await streamJsonLines(
+    "/api/solve-stream",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    {
+      onMessage(payload) {
+        if (payload.type === "progress") {
+          onProgress?.(payload);
+          return;
+        }
+
+        if (payload.type === "solution") {
+          finalSolution = payload.solution;
+          return;
+        }
+
+        if (payload.type === "error") {
+          throw new Error(payload.error || "Optimal solve failed.");
+        }
+      },
+    }
+  );
+
+  if (!finalSolution) {
+    throw new Error("Optimal solve ended without returning a solution.");
+  }
+
+  return finalSolution;
 }
 
 function pauseManualInput() {
@@ -215,7 +307,17 @@ async function solveDisplayed() {
   setStatus(`Solving ${solver}...`, "info");
 
   try {
-    const solution = await requestSolution(solver);
+    const solution = await requestSolution(solver, {
+      onProgress(payload) {
+        if (!payload.solution) {
+          return;
+        }
+        state.displayedSolution = payload.solution;
+        state.currentStep = payload.solution.moveCount;
+        setStatus(payload.message || "Solving optimal...", "info");
+        render();
+      },
+    });
     state.displayedSolution = solution;
     state.currentStep = solution.moveCount;
     if (solver === "optimal") {
@@ -240,10 +342,37 @@ async function loadOptimalReference() {
   setBusy(true);
   setStatus("Loading optimal reference...", "info");
 
+  const previousDisplayedSolution = state.displayedSolution;
+  const previousStep = state.currentStep;
+
   try {
-    state.optimalReference = await requestSolution("optimal");
+    state.optimalReference = await requestSolution("optimal", {
+      onProgress(payload) {
+        if (!payload.solution) {
+          return;
+        }
+        state.displayedSolution = payload.solution;
+        state.currentStep = payload.solution.moveCount;
+        setStatus(payload.message || "Loading optimal reference...", "info");
+        render();
+      },
+    });
+    if (previousDisplayedSolution) {
+      state.displayedSolution = previousDisplayedSolution;
+      state.currentStep = Math.min(previousStep, previousDisplayedSolution.moveCount);
+    } else {
+      state.displayedSolution = state.optimalReference;
+      state.currentStep = state.optimalReference.moveCount;
+    }
     setStatus("Loaded optimal reference for the current grid.", "success");
   } catch (error) {
+    if (previousDisplayedSolution) {
+      state.displayedSolution = previousDisplayedSolution;
+      state.currentStep = Math.min(previousStep, previousDisplayedSolution.moveCount);
+    } else {
+      state.displayedSolution = null;
+      state.currentStep = 0;
+    }
     setStatus(error.message, "error");
   } finally {
     setBusy(false);

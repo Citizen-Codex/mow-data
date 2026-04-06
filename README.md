@@ -84,4 +84,7 @@ uv run classifier.py classify --path "dddddddddruuuuuuuuurdddddddd"
 
 - Tkinter windows may not open in headless environments; CLI output still runs.
 - Use the same seed to reproduce the same generated grid for a given size.
+- Interactive exact solves now print periodic progress snapshots to the terminal while the branch-and-bound search is running.
+- Running `src/optimal_solver.py` with path visualization enabled now redraws the Tk window with the current best-so-far exact path during the search.
+- The browser UI also streams those exact-solver updates and redraws the best-so-far path on the grid while the search is in progress.
 - `optimal_solver()` is exact for the fixed start chosen by `find_start()`, but it is still exponential. It is most useful for smaller grids, solver benchmarking, and validating heuristic output.

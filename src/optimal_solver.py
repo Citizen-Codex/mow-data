@@ -1,7 +1,10 @@
 import argparse
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path as FilePath
 import sys
+import time
 from typing import Iterator
 
 if __package__ in (None, ""):
@@ -10,10 +13,41 @@ if __package__ in (None, ""):
 from src.grid import create_random_grid
 from src.shared_types import Grid, MOVE_DELTAS, Move, Path, Point
 from src.solvers import find_start, snake_solver, spiral_solver
-from src.visualize import path_stats, show_grid_path_tk, show_grid_tk
+from src.visualize import (
+    open_live_grid_path_tk,
+    path_stats,
+    show_grid_path_tk,
+    show_grid_tk,
+)
 
 
 TERMINAL_EXACT_THRESHOLD = 6
+PROGRESS_LOG_STATE_INTERVAL = 2048
+SCRIPT_PROGRESS_INTERVAL_SECONDS = 1.0
+
+
+type ProgressReporter = Callable[[str], None]
+
+
+@dataclass(slots=True)
+class SearchProgress:
+    phase: str
+    message: str
+    elapsed_seconds: float
+    states_explored: int
+    states_per_second: float
+    best_length: int
+    max_visited_cells: int
+    node_count: int
+    pruned_branches: int
+    best_path: Path
+
+
+type ProgressCallback = Callable[[SearchProgress], None]
+
+
+def _flush_print(message: str) -> None:
+    print(message, flush=True)
 
 
 def _iter_bits(mask: int) -> Iterator[int]:
@@ -24,8 +58,27 @@ def _iter_bits(mask: int) -> Iterator[int]:
 
 
 class _BranchAndBoundSearch:
-    def __init__(self, grid: Grid):
+    def __init__(
+        self,
+        grid: Grid,
+        *,
+        progress_reporter: ProgressReporter | None = None,
+        progress_callback: ProgressCallback | None = None,
+        progress_interval_seconds: float = 5.0,
+    ):
+        if progress_interval_seconds <= 0:
+            raise ValueError("progress_interval_seconds must be positive")
+
         self.grid = grid
+        self.progress_reporter = progress_reporter
+        self.progress_callback = progress_callback
+        self.progress_interval_seconds = progress_interval_seconds
+        self.started_at = 0.0
+        self.next_progress_at = 0.0
+        self.states_explored = 0
+        self.bound_prunes = 0
+        self.state_prunes = 0
+        self.max_visited_cells = 0
         self.points: list[Point] = []
         self.point_colors: list[int] = []
         self.point_to_index: dict[Point, int] = {}
@@ -116,11 +169,21 @@ class _BranchAndBoundSearch:
         if self.node_count == 0 or self.start is None:
             return {"start": None, "moves": []}
 
+        self.started_at = time.perf_counter()
+        self.next_progress_at = self.started_at + self.progress_interval_seconds
+
         incumbent = self._initial_upper_bound()
         self.best_length = len(incumbent["moves"])
         self.best_moves = list(incumbent["moves"])
 
         start_mask = 1 << self.start_index
+        self.max_visited_cells = 1
+        self._emit_progress(
+            "started",
+            "Optimal solver started: "
+            f"{self.node_count} open cells, initial upper bound {self.best_length} moves, "
+            f"reporting every {self.progress_interval_seconds:g}s.",
+        )
         start_lower_bound = self._lower_bound(self.start_index, start_mask)
         self._search(
             self.start_index,
@@ -128,7 +191,93 @@ class _BranchAndBoundSearch:
             [],
             start_lower_bound,
         )
+        elapsed = time.perf_counter() - self.started_at
+        self.max_visited_cells = self.node_count
+        self._emit_progress(
+            "finished",
+            "Optimal solver finished: "
+            f"elapsed {self._format_elapsed(elapsed)}, "
+            f"explored {self.states_explored:,} states, "
+            f"pruned {self.bound_prunes + self.state_prunes:,} branches, "
+            f"optimal length {self.best_length} moves.",
+            now=time.perf_counter(),
+        )
         return {"start": self.start, "moves": list(self.best_moves)}
+
+    def _current_best_path(self) -> Path:
+        return {"start": self.start, "moves": list(self.best_moves)}
+
+    def _emit_progress(
+        self,
+        phase: str,
+        message: str,
+        *,
+        now: float | None = None,
+    ) -> None:
+        if self.progress_reporter is None and self.progress_callback is None:
+            return
+
+        if self.progress_reporter is not None:
+            self.progress_reporter(message)
+
+        if self.progress_callback is None:
+            return
+
+        current_time = time.perf_counter() if now is None else now
+        elapsed = max(0.0, current_time - self.started_at)
+        states_per_second = self.states_explored / elapsed if elapsed > 0 else 0.0
+        self.progress_callback(
+            SearchProgress(
+                phase=phase,
+                message=message,
+                elapsed_seconds=elapsed,
+                states_explored=self.states_explored,
+                states_per_second=states_per_second,
+                best_length=self.best_length,
+                max_visited_cells=self.max_visited_cells,
+                node_count=self.node_count,
+                pruned_branches=self.bound_prunes + self.state_prunes,
+                best_path=self._current_best_path(),
+            )
+        )
+
+    def _format_elapsed(self, elapsed: float) -> str:
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+
+        minutes, seconds = divmod(elapsed, 60.0)
+        if minutes < 60:
+            return f"{int(minutes)}m {seconds:04.1f}s"
+
+        hours, minutes = divmod(minutes, 60.0)
+        return f"{int(hours)}h {int(minutes):02d}m {seconds:04.1f}s"
+
+    def _maybe_report_progress(self, visited_mask: int) -> None:
+        if self.progress_reporter is None and self.progress_callback is None:
+            return
+
+        self.states_explored += 1
+        self.max_visited_cells = max(self.max_visited_cells, visited_mask.bit_count())
+        if self.states_explored % PROGRESS_LOG_STATE_INTERVAL != 0:
+            return
+
+        now = time.perf_counter()
+        if now < self.next_progress_at:
+            return
+
+        elapsed = now - self.started_at
+        states_per_second = self.states_explored / elapsed if elapsed > 0 else 0.0
+        self._emit_progress(
+            "progress",
+            "Optimal solver progress: "
+            f"elapsed {self._format_elapsed(elapsed)}, "
+            f"explored {self.states_explored:,} states ({states_per_second:,.0f}/s), "
+            f"best {self.best_length} moves, "
+            f"max coverage {self.max_visited_cells}/{self.node_count} cells, "
+            f"pruned {self.bound_prunes + self.state_prunes:,} branches.",
+            now=now,
+        )
+        self.next_progress_at = now + self.progress_interval_seconds
 
     def _validate_connected_open_cells(self) -> None:
         reachable = {self.start_index}
@@ -320,12 +469,15 @@ class _BranchAndBoundSearch:
         lower_bound: int,
     ) -> None:
         steps = len(path)
+        self._maybe_report_progress(visited_mask)
         if steps + lower_bound >= self.best_length:
+            self.bound_prunes += 1
             return
 
         state = (current, visited_mask)
         previous_best = self.best_cost_by_state.get(state)
         if previous_best is not None and previous_best <= steps:
+            self.state_prunes += 1
             return
         self.best_cost_by_state[state] = steps
 
@@ -757,8 +909,17 @@ class _BranchAndBoundSearch:
 
 def optimal_solver(
     grid: Grid,
+    *,
+    progress_reporter: ProgressReporter | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_interval_seconds: float = 5.0,
 ) -> Path:
-    return _BranchAndBoundSearch(grid).solve()
+    return _BranchAndBoundSearch(
+        grid,
+        progress_reporter=progress_reporter,
+        progress_callback=progress_callback,
+        progress_interval_seconds=progress_interval_seconds,
+    ).solve()
 
 
 def main(
@@ -769,19 +930,52 @@ def main(
     show_path: bool = True,
 ) -> None:
     demo_grid = create_random_grid(n, seed)
+    live_window = None
 
     print(f"Simulated {n}x{n} grid (seed={seed})")
 
-    if show_grid:
+    if show_path:
+        print("Launching live optimal path visualizer...")
+        live_window = open_live_grid_path_tk(
+            demo_grid,
+            {"start": find_start(demo_grid), "moves": []},
+            title="Optimal Solver Path Visualizer",
+            status_line="Waiting for initial incumbent...",
+        )
+        if live_window is None:
+            print(
+                "Live optimal path visualizer could not start (likely no display environment)."
+            )
+    elif show_grid:
         print("Launching empty-grid visualizer...")
         launched_grid = show_grid_tk(demo_grid, title="Optimal Solver Grid Visualizer")
         if not launched_grid:
             print("Grid visualizer could not start (likely no display environment).")
 
-    optimal_path = optimal_solver(demo_grid)
+    def update_live_window(progress: SearchProgress) -> None:
+        nonlocal live_window
+        if live_window is None:
+            return
+        if not live_window.update_path(
+            progress.best_path, status_line=progress.message
+        ):
+            live_window = None
+
+    optimal_path = optimal_solver(
+        demo_grid,
+        progress_reporter=_flush_print,
+        progress_callback=update_live_window if live_window is not None else None,
+        progress_interval_seconds=SCRIPT_PROGRESS_INTERVAL_SECONDS,
+    )
     print(path_stats(optimal_path))
 
-    if show_path:
+    if live_window is not None:
+        live_window.update_path(
+            optimal_path,
+            status_line="Optimal solver finished. Final incumbent shown.",
+        )
+        live_window.run()
+    elif show_path:
         print("Launching optimal path visualizer...")
         launched_path = show_grid_path_tk(
             demo_grid,

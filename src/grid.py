@@ -1,7 +1,12 @@
+import argparse
+import json
 import random
 from collections import deque
 
-from src.shared_types import Grid, Point, MOVE_DELTAS
+try:
+    from src.shared_types import Grid, Point, MOVE_DELTAS
+except ModuleNotFoundError:  # Support direct script execution: uv run src/grid.py
+    from shared_types import Grid, Point, MOVE_DELTAS
 
 
 def can_remove(grid: Grid, x: int, y: int) -> bool:
@@ -81,3 +86,48 @@ def create_random_grid(
                 x, y = nx, ny
 
     return grid
+
+
+def obstacle_coordinates(grid: Grid) -> list[dict[str, int]]:
+    return [
+        {"x": x, "y": y}
+        for x, row in enumerate(grid)
+        for y, cell in enumerate(row)
+        if cell == 0
+    ]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate and print a random grid")
+    parser.add_argument("size", type=int, nargs="?", default=10, help="Grid size")
+    parser.add_argument("seed", type=int, nargs="?", default=0, help="Random seed")
+    parser.add_argument(
+        "--removed-min",
+        type=float,
+        default=0.18,
+        help="Minimum removed-cell fraction",
+    )
+    parser.add_argument(
+        "--removed-max",
+        type=float,
+        default=0.42,
+        help="Maximum removed-cell fraction",
+    )
+    args = parser.parse_args()
+
+    grid = create_random_grid(
+        args.size,
+        args.seed,
+        removed_fraction_range=(args.removed_min, args.removed_max),
+    )
+    payload = {
+        "size": args.size,
+        "seed": args.seed,
+        "grid": grid,
+        "obstacles": obstacle_coordinates(grid),
+    }
+    print(json.dumps(payload, indent=2))
+
+
+if __name__ == "__main__":
+    main()

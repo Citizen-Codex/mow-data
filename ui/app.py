@@ -15,7 +15,7 @@ if __package__ in (None, ""):
     sys.path.append(str(FilePath(__file__).resolve().parents[1]))
 
 from src.grid import create_random_grid
-from src.optimal_solver import optimal_solver
+from src.optimal_solver import SearchProgress, optimal_solver
 from src.shared_types import Grid, Path as SolverPath, Point
 from src.solvers import find_start, random_walk_solver, snake_solver, spiral_solver
 from src.visualize import calculate_visit_counts, trace_path_points
@@ -24,6 +24,7 @@ from src.visualize import calculate_visit_counts, trace_path_points
 SOLVER_OPTIONS = {"snake", "spiral", "random_walk", "optimal"}
 STRATEGY_OPTIONS = {"least_overlap", "shortest"}
 START_OPTIONS = {"auto", "down", "right"}
+OPTIMAL_PROGRESS_INTERVAL_SECONDS = 1.0
 SOLVER_LABELS = {
     "snake": "Snake",
     "spiral": "Spiral",
@@ -98,11 +99,22 @@ def solve_snapshot(
         path = random_walk_solver(grid, rng=random.Random(seed))
         detail_label = f"seeded walk ({seed})"
     elif solver_key == "optimal":
-        path = optimal_solver(grid)
+        path = optimal_solver(
+            grid, progress_reporter=lambda message: print(message, flush=True)
+        )
         detail_label = "exact branch-and-bound"
     else:
         raise ValueError(f"Unknown solver: {solver_key}")
 
+    return build_solution_snapshot(grid, solver_key, detail_label, path)
+
+
+def build_solution_snapshot(
+    grid: Grid,
+    solver_key: str,
+    detail_label: str,
+    path: SolverPath,
+) -> SolutionSnapshot:
     points = trace_path_points(path)
     visit_counts = calculate_visit_counts(points)
     overlap_count = sum(count - 1 for count in visit_counts.values() if count > 1)
@@ -127,6 +139,28 @@ def solve_snapshot(
         start=path["start"],
         end=points[-1] if points else None,
     )
+
+
+def build_progress_payload(grid: Grid, progress: SearchProgress) -> dict[str, object]:
+    snapshot = build_solution_snapshot(
+        grid,
+        "optimal",
+        "best so far",
+        progress.best_path,
+    )
+    return {
+        "type": "progress",
+        "phase": progress.phase,
+        "message": progress.message,
+        "elapsedSeconds": progress.elapsed_seconds,
+        "statesExplored": progress.states_explored,
+        "statesPerSecond": progress.states_per_second,
+        "bestLength": progress.best_length,
+        "maxVisitedCells": progress.max_visited_cells,
+        "nodeCount": progress.node_count,
+        "prunedBranches": progress.pruned_branches,
+        "solution": snapshot.to_dict(),
+    }
 
 
 def build_grid_payload(
@@ -155,6 +189,8 @@ def build_grid_payload(
 
 
 class MowUIHandler(SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
@@ -176,8 +212,34 @@ class MowUIHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/solve":
             self._handle_solve()
             return
+        if parsed.path == "/api/solve-stream":
+            self._handle_solve_stream()
+            return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown API route")
+
+    def _parse_solve_request(self, body: object) -> tuple[Grid, str, str, str, int]:
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+
+        grid = body.get("grid")
+        solver_key = body.get("solver")
+        move_strategy = body.get("strategy")
+        start_mode = body.get("startMode")
+        seed = body.get("seed")
+
+        if not isinstance(grid, list) or not grid:
+            raise ValueError("grid must be a non-empty 2D array")
+        if solver_key not in SOLVER_OPTIONS:
+            raise ValueError(f"Unknown solver: {solver_key}")
+        if move_strategy not in STRATEGY_OPTIONS:
+            raise ValueError(f"Unknown strategy: {move_strategy}")
+        if start_mode not in START_OPTIONS:
+            raise ValueError(f"Unknown startMode: {start_mode}")
+        if not isinstance(seed, int):
+            raise ValueError("seed must be an integer")
+
+        return grid, solver_key, move_strategy, start_mode, seed
 
     def _handle_grid(self, query: str) -> None:
         params = parse_qs(query)
@@ -214,26 +276,12 @@ class MowUIHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": f"Invalid JSON body: {exc}"}, status=400)
             return
 
-        grid = body.get("grid")
-        solver_key = body.get("solver")
-        move_strategy = body.get("strategy")
-        start_mode = body.get("startMode")
-        seed = body.get("seed")
-
-        if not isinstance(grid, list) or not grid:
-            self._send_json({"error": "grid must be a non-empty 2D array"}, status=400)
-            return
-        if solver_key not in SOLVER_OPTIONS:
-            self._send_json({"error": f"Unknown solver: {solver_key}"}, status=400)
-            return
-        if move_strategy not in STRATEGY_OPTIONS:
-            self._send_json({"error": f"Unknown strategy: {move_strategy}"}, status=400)
-            return
-        if start_mode not in START_OPTIONS:
-            self._send_json({"error": f"Unknown startMode: {start_mode}"}, status=400)
-            return
-        if not isinstance(seed, int):
-            self._send_json({"error": "seed must be an integer"}, status=400)
+        try:
+            grid, solver_key, move_strategy, start_mode, seed = (
+                self._parse_solve_request(body)
+            )
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
             return
 
         try:
@@ -243,6 +291,71 @@ class MowUIHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json({"solution": snapshot.to_dict()})
+
+    def _handle_solve_stream(self) -> None:
+        try:
+            body = self._read_json_body()
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": f"Invalid JSON body: {exc}"}, status=400)
+            return
+
+        try:
+            grid, solver_key, _, _, _ = self._parse_solve_request(body)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+            return
+
+        if solver_key != "optimal":
+            self._send_json(
+                {"error": "Streaming solve is only available for the optimal solver"},
+                status=400,
+            )
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def send_event(payload: dict[str, object]) -> None:
+            encoded = (json.dumps(payload) + "\n").encode("utf-8")
+            self.wfile.write(encoded)
+            self.wfile.flush()
+
+        def handle_progress(progress: SearchProgress) -> None:
+            if progress.phase == "finished":
+                return
+            send_event(build_progress_payload(grid, progress))
+
+        try:
+            path = optimal_solver(
+                grid,
+                progress_reporter=lambda message: print(message, flush=True),
+                progress_callback=handle_progress,
+                progress_interval_seconds=OPTIMAL_PROGRESS_INTERVAL_SECONDS,
+            )
+            snapshot = build_solution_snapshot(
+                grid,
+                "optimal",
+                "exact branch-and-bound",
+                path,
+            )
+            send_event(
+                {
+                    "type": "solution",
+                    "message": "Optimal solver finished.",
+                    "solution": snapshot.to_dict(),
+                }
+            )
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:
+            try:
+                send_event({"type": "error", "error": str(exc)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _read_json_body(self) -> object:
         content_length = int(self.headers.get("Content-Length", "0"))

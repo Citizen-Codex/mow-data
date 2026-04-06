@@ -49,7 +49,10 @@ def main(n: int, seed: int):
             "Random walk path visualizer could not start (likely no display environment)."
         )
 
-    optimal_path = optimal_solver(demo_grid)
+    optimal_path = optimal_solver(
+        demo_grid,
+        progress_reporter=lambda message: print(message, flush=True),
+    )
     print(path_stats(optimal_path))
     print("Launching optimal path visualizer...")
 

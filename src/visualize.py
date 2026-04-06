@@ -124,6 +124,274 @@ def _show_grid_window_tk(
     return True
 
 
+def _item_tags(tag: str | None) -> dict[str, tuple[str, ...]]:
+    if tag is None:
+        return {}
+    return {"tags": (tag,)}
+
+
+def _draw_path_overlay(
+    canvas: Any,
+    cell_bbox: Callable[[int, int], tuple[int, int, int, int]],
+    tk: Any,
+    grid: Grid,
+    path: Path,
+    *,
+    cell_size: int,
+    rows: int,
+    cols: int,
+    tag: str | None = None,
+) -> None:
+    points = trace_path_points(path)
+    visit_counts = calculate_visit_counts(points)
+    item_tags = _item_tags(tag)
+
+    for i in range(1, len(points)):
+        pr, pc = points[i - 1]
+        cr, cc = points[i]
+        if not (
+            0 <= pr < rows and 0 <= pc < cols and 0 <= cr < rows and 0 <= cc < cols
+        ):
+            continue
+
+        px0, py0, px1, py1 = cell_bbox(pr, pc)
+        cx0, cy0, cx1, cy1 = cell_bbox(cr, cc)
+        x_start = (px0 + px1) / 2
+        y_start = (py0 + py1) / 2
+        x_end = (cx0 + cx1) / 2
+        y_end = (cy0 + cy1) / 2
+
+        canvas.create_line(
+            x_start,
+            y_start,
+            x_end,
+            y_end,
+            fill="#0f766e",
+            width=3,
+            arrow=tk.LAST,
+            arrowshape=(10, 12, 5),
+            **item_tags,
+        )
+
+    for (row, col), count in visit_counts.items():
+        if (
+            count <= 1
+            or not (0 <= row < rows and 0 <= col < cols)
+            or grid[row][col] == 0
+        ):
+            continue
+
+        x0, y0, x1, y1 = cell_bbox(row, col)
+        cx = (x0 + x1) / 2
+        cy = (y0 + y1) / 2
+        radius = cell_size * 0.18
+        canvas.create_oval(
+            cx - radius,
+            cy - radius,
+            cx + radius,
+            cy + radius,
+            fill="#fb7185",
+            outline="#be123c",
+            width=1,
+            **item_tags,
+        )
+        canvas.create_text(
+            cx,
+            cy,
+            text=str(count),
+            fill="#ffffff",
+            font=("TkDefaultFont", 9, "bold"),
+            **item_tags,
+        )
+
+    if path["start"] is not None:
+        s_row, s_col = path["start"]
+        if 0 <= s_row < rows and 0 <= s_col < cols and grid[s_row][s_col] == 1:
+            x0, y0, x1, y1 = cell_bbox(s_row, s_col)
+            canvas.create_rectangle(
+                x0 + 5,
+                y0 + 5,
+                x1 - 5,
+                y1 - 5,
+                outline="#16a34a",
+                width=3,
+                **item_tags,
+            )
+            canvas.create_text(
+                x0 + 12,
+                y0 + 12,
+                text="S",
+                fill="#15803d",
+                font=("TkDefaultFont", 10, "bold"),
+                **item_tags,
+            )
+
+    if points:
+        e_row, e_col = points[-1]
+        if 0 <= e_row < rows and 0 <= e_col < cols and grid[e_row][e_col] == 1:
+            x0, y0, x1, y1 = cell_bbox(e_row, e_col)
+            canvas.create_rectangle(
+                x0 + 5,
+                y0 + 5,
+                x1 - 5,
+                y1 - 5,
+                outline="#dc2626",
+                width=3,
+                **item_tags,
+            )
+            canvas.create_text(
+                x0 + 12,
+                y0 + 12,
+                text="E",
+                fill="#b91c1c",
+                font=("TkDefaultFont", 10, "bold"),
+                **item_tags,
+            )
+
+
+class _LivePathWindow:
+    def __init__(
+        self,
+        grid: Grid,
+        path: Path,
+        *,
+        title: str,
+        cell_size: int,
+        status_line: str,
+    ) -> None:
+        import tkinter as tk
+
+        self.tk = tk
+        self.grid = grid
+        self.cell_size = cell_size
+        self.rows = len(grid)
+        self.cols = len(grid[0]) if self.rows else 0
+        self.margin = 24
+        self.closed = False
+        self.overlay_tag = "live-path-overlay"
+        self.dynamic_legend_tag = "live-path-legend"
+
+        width = self.cols * cell_size + self.margin * 2
+        height = self.rows * cell_size + self.margin * 2 + 80
+
+        self.root = tk.Tk()
+        self.root.title(title)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.canvas = tk.Canvas(
+            self.root,
+            width=width,
+            height=height,
+            bg="#f7fafc",
+            highlightthickness=0,
+        )
+        self.canvas.pack()
+
+        _draw_base_grid(self.canvas, grid, self.cell_bbox)
+
+        legend_y = self.margin + self.rows * cell_size + 20
+        self.canvas.create_text(
+            self.margin,
+            legend_y,
+            anchor="w",
+            fill="#0f172a",
+            font=("TkDefaultFont", 10),
+            text="Arrows: direction | Red badges: overlap count | Green box: start | Red box: end",
+        )
+
+        self.update_path(path, status_line=status_line)
+
+    def cell_bbox(self, row: int, col: int) -> tuple[int, int, int, int]:
+        x0 = self.margin + col * self.cell_size
+        y0 = self.margin + row * self.cell_size
+        x1 = x0 + self.cell_size
+        y1 = y0 + self.cell_size
+        return x0, y0, x1, y1
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.root.destroy()
+        except self.tk.TclError:
+            pass
+
+    def update_path(self, path: Path, *, status_line: str) -> bool:
+        if self.closed:
+            return False
+
+        try:
+            self.canvas.delete(self.overlay_tag)
+            self.canvas.delete(self.dynamic_legend_tag)
+            _draw_path_overlay(
+                self.canvas,
+                self.cell_bbox,
+                self.tk,
+                self.grid,
+                path,
+                cell_size=self.cell_size,
+                rows=self.rows,
+                cols=self.cols,
+                tag=self.overlay_tag,
+            )
+
+            legend_y = self.margin + self.rows * self.cell_size + 40
+            for idx, line in enumerate((status_line, path_stats(path))):
+                self.canvas.create_text(
+                    self.margin,
+                    legend_y + (idx * 20),
+                    anchor="w",
+                    fill="#334155",
+                    font=("TkDefaultFont", 10),
+                    text=line,
+                    tags=(self.dynamic_legend_tag,),
+                )
+
+            self.root.update_idletasks()
+            self.root.update()
+        except self.tk.TclError:
+            self.closed = True
+            return False
+
+        return True
+
+    def run(self) -> None:
+        if self.closed:
+            return
+        try:
+            self.root.mainloop()
+        except self.tk.TclError:
+            self.closed = True
+
+
+def open_live_grid_path_tk(
+    grid: Grid,
+    path: Path,
+    *,
+    title: str = "Grid Path Visualizer",
+    cell_size: int = 42,
+    status_line: str = "Waiting for progress...",
+) -> _LivePathWindow | None:
+    if not grid or not grid[0]:
+        return None
+
+    try:
+        import tkinter as tk
+    except ModuleNotFoundError:
+        return None
+
+    try:
+        return _LivePathWindow(
+            grid,
+            path,
+            title=title,
+            cell_size=cell_size,
+            status_line=status_line,
+        )
+    except (RuntimeError, tk.TclError):
+        return None
+
+
 def show_grid_path_tk(
     grid: Grid,
     path: Path,
@@ -131,9 +399,6 @@ def show_grid_path_tk(
     title: str = "Grid Path Visualizer",
     cell_size: int = 42,
 ) -> bool:
-    points = trace_path_points(path)
-    visit_counts = calculate_visit_counts(points)
-
     def draw_overlay(
         canvas: Any,
         cell_bbox: Callable[[int, int], tuple[int, int, int, int]],
@@ -141,90 +406,16 @@ def show_grid_path_tk(
         rows: int,
         cols: int,
     ) -> None:
-        for i in range(1, len(points)):
-            pr, pc = points[i - 1]
-            cr, cc = points[i]
-            if not (
-                0 <= pr < rows and 0 <= pc < cols and 0 <= cr < rows and 0 <= cc < cols
-            ):
-                continue
-
-            px0, py0, px1, py1 = cell_bbox(pr, pc)
-            cx0, cy0, cx1, cy1 = cell_bbox(cr, cc)
-            x_start = (px0 + px1) / 2
-            y_start = (py0 + py1) / 2
-            x_end = (cx0 + cx1) / 2
-            y_end = (cy0 + cy1) / 2
-
-            canvas.create_line(
-                x_start,
-                y_start,
-                x_end,
-                y_end,
-                fill="#0f766e",
-                width=3,
-                arrow=tk.LAST,
-                arrowshape=(10, 12, 5),
-            )
-
-        for (row, col), count in visit_counts.items():
-            if (
-                count <= 1
-                or not (0 <= row < rows and 0 <= col < cols)
-                or grid[row][col] == 0
-            ):
-                continue
-
-            x0, y0, x1, y1 = cell_bbox(row, col)
-            cx = (x0 + x1) / 2
-            cy = (y0 + y1) / 2
-            radius = cell_size * 0.18
-            canvas.create_oval(
-                cx - radius,
-                cy - radius,
-                cx + radius,
-                cy + radius,
-                fill="#fb7185",
-                outline="#be123c",
-                width=1,
-            )
-            canvas.create_text(
-                cx,
-                cy,
-                text=str(count),
-                fill="#ffffff",
-                font=("TkDefaultFont", 9, "bold"),
-            )
-
-        if path["start"] is not None:
-            s_row, s_col = path["start"]
-            if 0 <= s_row < rows and 0 <= s_col < cols and grid[s_row][s_col] == 1:
-                x0, y0, x1, y1 = cell_bbox(s_row, s_col)
-                canvas.create_rectangle(
-                    x0 + 5, y0 + 5, x1 - 5, y1 - 5, outline="#16a34a", width=3
-                )
-                canvas.create_text(
-                    x0 + 12,
-                    y0 + 12,
-                    text="S",
-                    fill="#15803d",
-                    font=("TkDefaultFont", 10, "bold"),
-                )
-
-        if points:
-            e_row, e_col = points[-1]
-            if 0 <= e_row < rows and 0 <= e_col < cols and grid[e_row][e_col] == 1:
-                x0, y0, x1, y1 = cell_bbox(e_row, e_col)
-                canvas.create_rectangle(
-                    x0 + 5, y0 + 5, x1 - 5, y1 - 5, outline="#dc2626", width=3
-                )
-                canvas.create_text(
-                    x0 + 12,
-                    y0 + 12,
-                    text="E",
-                    fill="#b91c1c",
-                    font=("TkDefaultFont", 10, "bold"),
-                )
+        _draw_path_overlay(
+            canvas,
+            cell_bbox,
+            tk,
+            grid,
+            path,
+            cell_size=cell_size,
+            rows=rows,
+            cols=cols,
+        )
 
     legend_lines = [
         "Arrows: direction | Red badges: overlap count | Green box: start | Red box: end",
