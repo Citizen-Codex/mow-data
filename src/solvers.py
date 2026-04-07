@@ -365,3 +365,6 @@ def random_walk_solver(grid: Grid, rng: random.Random | None = None) -> Path:
         visited.add(current)
 
     return {"start": start, "moves": moves}
+
+
+from src.memetic_solver import memetic_ga_solver

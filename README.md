@@ -5,7 +5,7 @@ Mow The Lawn is a small Python project for generating connected random lawn grid
 ## Project purpose
 
 - Generate deterministic random grids from a size and seed.
-- Compare heuristic traversal strategies and an exact branch-and-bound solver.
+- Compare heuristic traversal strategies, a memetic genetic solver, and an exact branch-and-bound solver.
 - Visualize base grids and computed paths.
 - Simulate many grids to build labelled training data (`snake_path`, `spiral_path`, `random_walk_path`).
 
@@ -16,6 +16,7 @@ Mow The Lawn is a small Python project for generating connected random lawn grid
 - `classifier.py`: Train/evaluate/classify path strings as snake-like, spiral-like, or random-walk-like.
 - `src/grid.py`: Random grid generation with connectivity-safe cell removals.
 - `src/solvers.py`: Snake/spiral/random-walk solvers, pathing strategies (`shortest`, `least_overlap`), and the shared fixed-start/path helpers.
+- `src/memetic_solver/`: Structure-aware memetic genetic solver for fast near-optimal coverage paths.
 - `src/optimal_solver.py`: Exact `optimal_solver()` branch-and-bound search for minimum-move full coverage.
 - `src/visualize.py`: Tkinter visualization helpers and path statistics.
 - `src/shared_types.py`: Shared types (`Grid`, `Path`, moves, and deltas).
@@ -87,4 +88,5 @@ uv run classifier.py classify --path "dddddddddruuuuuuuuurdddddddd"
 - Interactive exact solves now print periodic progress snapshots to the terminal while the branch-and-bound search is running.
 - Running `src/optimal_solver.py` with path visualization enabled now redraws the Tk window with the current best-so-far exact path during the search.
 - The browser UI also streams those exact-solver updates and redraws the best-so-far path on the grid while the search is in progress.
+- The browser UI includes a `memetic_ga` solver option for faster near-optimal paths without running the full exact search.
 - `optimal_solver()` is exact for the fixed start chosen by `find_start()`, but it is still exponential. It is most useful for smaller grids, solver benchmarking, and validating heuristic output.

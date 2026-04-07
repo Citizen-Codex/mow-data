@@ -18,11 +18,17 @@ if __package__ in (None, ""):
 from src.grid import create_random_grid
 from src.optimal_solver import SearchProgress, optimal_solver
 from src.shared_types import MOVE_DELTAS, Grid, Path as SolverPath, Point
-from src.solvers import find_start, random_walk_solver, snake_solver, spiral_solver
+from src.solvers import (
+    find_start,
+    memetic_ga_solver,
+    random_walk_solver,
+    snake_solver,
+    spiral_solver,
+)
 from src.visualize import calculate_visit_counts, trace_path_points
 
 
-SOLVER_OPTIONS = {"snake", "spiral", "random_walk", "optimal"}
+SOLVER_OPTIONS = {"snake", "spiral", "random_walk", "memetic_ga", "optimal"}
 STRATEGY_OPTIONS = {"least_overlap", "shortest"}
 START_OPTIONS = {"auto", "down", "right"}
 OPTIMAL_PROGRESS_INTERVAL_SECONDS = 1.0
@@ -31,6 +37,7 @@ SOLVER_LABELS = {
     "snake": "Snake",
     "spiral": "Spiral",
     "random_walk": "Random walk",
+    "memetic_ga": "Memetic GA",
     "optimal": "Optimal",
 }
 HUMAN_RESULTS_PATH = (
@@ -110,6 +117,9 @@ def solve_snapshot(
     elif solver_key == "random_walk":
         path = random_walk_solver(grid, rng=random.Random(seed))
         detail_label = f"seeded walk ({seed})"
+    elif solver_key == "memetic_ga":
+        path = memetic_ga_solver(grid, rng=random.Random(seed))
+        detail_label = f"memetic genetic search ({seed})"
     elif solver_key == "optimal":
         path = optimal_solver(
             grid, progress_reporter=lambda message: print(message, flush=True)
