@@ -1,0 +1,32 @@
+{
+  "env": {
+    "size": 10,
+    "removed_fraction_min": 0.18,
+    "removed_fraction_max": 0.42,
+    "reward_new_cell": 1.0,
+    "reward_revisit": -0.3,
+    "reward_complete": 5.0,
+    "max_steps_factor": 2.0,
+    "grid_pool_size": 1024,
+    "base_seed": 0
+  },
+  "train": {
+    "total_timesteps": 10000000,
+    "n_envs": 16,
+    "n_steps": 256,
+    "n_epochs": 2,
+    "learning_rate": 0.001,
+    "gamma": 0.9999,
+    "batch_size": 64,
+    "ent_coef": 0.2,
+    "seed": 0,
+    "device": "auto"
+  },
+  "action_order": [
+    "u",
+    "d",
+    "l",
+    "r"
+  ],
+  "trained_total_timesteps": 221016064
+}

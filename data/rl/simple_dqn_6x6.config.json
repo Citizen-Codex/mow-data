@@ -1,0 +1,31 @@
+{
+  "env": {
+    "size": 6,
+    "removed_fraction_min": 0.18,
+    "removed_fraction_max": 0.42,
+    "reward_new_cell": 1.0,
+    "reward_revisit": -0.25,
+    "reward_invalid": -1.0,
+    "reward_complete": 5.0,
+    "max_steps_factor": 2.0,
+    "base_seed": 0
+  },
+  "train": {
+    "total_timesteps": 50000,
+    "learning_rate": 0.001,
+    "gamma": 0.99,
+    "batch_size": 64,
+    "buffer_size": 50000,
+    "learning_starts": 1000,
+    "target_update_interval": 500,
+    "train_freq": 4,
+    "seed": 0,
+    "device": "auto"
+  },
+  "action_order": [
+    "u",
+    "d",
+    "l",
+    "r"
+  ]
+}
