@@ -8,8 +8,12 @@ dependencies = [
     "gymnasium>=1.2.2",
     "numpy>=2.3.3",
     "pandas>=3.0.1",
+    "pyconcorde",
     "python-dotenv>=1.0.0",
-    "scikit-learn>=1.8.0",
     "sb3-contrib>=2.7.0",
+    "scikit-learn>=1.8.0",
     "stable-baselines3>=2.7.0",
 ]
+
+[tool.uv.sources]
+pyconcorde = { git = "https://github.com/jvkersch/pyconcorde" }
