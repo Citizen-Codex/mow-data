@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Trace Replay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0b1220; --ink2:#0e1626; --panel:#121d31; --panel2:#162338;
+  --line:#21304d; --line2:#2c4068;
+  --text:#e9eef8; --muted:#8497b6; --faint:#5d6f90;
+  --amber:#f5b841; --hot:#ff5c8a; --cool:#5b8cff;
+  --c0:#5b8cff; --c1:#1fb6c9; --c2:#3ddc97; --c3:#f5b841; --c4:#ff8a5b; --c5:#ff5c8a;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:'Space Grotesk',system-ui,-apple-system,Segoe UI,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1200px 700px at 80% -10%, #16223a 0%, transparent 55%),
+    radial-gradient(900px 600px at -10% 110%, #131d33 0%, transparent 50%),
+    var(--ink);
+  color:var(--text); font-family:var(--disp);
+  -webkit-font-smoothing:antialiased; line-height:1.45;
+  padding:22px clamp(14px,3vw,34px) 60px;
+}
+.wrap{max-width:1180px;margin:0 auto}
+header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:18px}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.brand h1{font-size:clamp(22px,3.4vw,32px);font-weight:700;letter-spacing:-.02em;margin:0}
+.brand .sub{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.02em}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 10px var(--amber);margin-right:7px;vertical-align:middle}
+.meta{font-family:var(--mono);font-size:11.5px;color:var(--faint);text-align:right;line-height:1.7}
+.meta b{color:var(--muted);font-weight:500}
+
+/* run selector */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+.tab{font-family:var(--mono);font-size:12.5px;letter-spacing:.02em;color:var(--muted);
+  background:var(--panel);border:1px solid var(--line);padding:8px 13px;border-radius:999px;
+  cursor:pointer;transition:.15s;display:flex;align-items:center;gap:8px}
+.tab:hover{border-color:var(--line2);color:var(--text)}
+.tab .sw{width:9px;height:9px;border-radius:2px}
+.tab.active{color:var(--ink);font-weight:600;border-color:transparent}
+.tab.sep{margin-left:auto}
+.tab.cmp.active{background:var(--text);color:var(--ink)}
+
+/* layout */
+.stage{display:grid;grid-template-columns:1fr 312px;gap:16px}
+@media(max-width:840px){.stage{grid-template-columns:1fr}}
+.card{background:linear-gradient(180deg,var(--panel),var(--ink2));border:1px solid var(--line);
+  border-radius:var(--r);padding:14px}
+.card h3{margin:0 0 10px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);font-family:var(--mono)}
+
+/* canvas + transport */
+.canvas-wrap{position:relative;background:var(--ink2);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px}
+#grid{width:100%;display:block;border-radius:6px;touch-action:none}
+.legend{display:flex;align-items:center;gap:10px;margin-top:12px;font-family:var(--mono);
+  font-size:11px;color:var(--muted);flex-wrap:wrap}
+.ramp{height:9px;flex:1;min-width:120px;border-radius:5px;
+  background:linear-gradient(90deg,var(--c0),var(--c1),var(--c3),var(--c5))}
+.ramp.speed{background:linear-gradient(90deg,#1fb6c9,#3ddc97,#f5b841,#ff5c8a)}
+
+#pace{width:100%;height:54px;display:block;margin-top:12px;cursor:pointer;touch-action:none}
+
+.transport{display:flex;align-items:center;gap:12px;margin-top:12px}
+.play{width:42px;height:42px;flex:0 0 42px;border-radius:50%;border:1px solid var(--line2);
+  background:var(--panel2);color:var(--text);cursor:pointer;display:grid;place-items:center;transition:.15s}
+.play:hover{border-color:var(--amber);color:var(--amber)}
+.play svg{width:16px;height:16px}
+#scrub{flex:1;-webkit-appearance:none;appearance:none;height:6px;border-radius:4px;
+  background:var(--line);outline:none;cursor:pointer}
+#scrub::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+  background:var(--amber);box-shadow:0 0 8px rgba(245,184,65,.6);cursor:pointer}
+#scrub::-moz-range-thumb{width:16px;height:16px;border:none;border-radius:50%;background:var(--amber);cursor:pointer}
+.readout{font-family:var(--mono);font-size:12.5px;color:var(--text);min-width:118px;text-align:right;
+  white-space:nowrap}
+.readout .s{color:var(--faint)}
+
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.seg{display:flex;background:var(--ink2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{font-family:var(--mono);font-size:11.5px;color:var(--muted);background:none;border:none;
+  padding:7px 11px;cursor:pointer;transition:.12s}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--panel2);color:var(--amber)}
+.chk{font-family:var(--mono);font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;
+  gap:6px;cursor:pointer;user-select:none;padding:7px 4px}
+.chk input{accent-color:var(--amber);cursor:pointer}
+.spd{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+
+/* stats */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.stat{background:var(--ink2);padding:11px 12px}
+.stat .v{font-family:var(--mono);font-size:19px;font-weight:600;color:var(--text);letter-spacing:-.01em}
+.stat .v .u{font-size:11px;color:var(--faint);font-weight:400;margin-left:2px}
+.stat .k{font-size:10.5px;color:var(--faint);font-family:var(--mono);letter-spacing:.05em;margin-top:2px;
+  text-transform:uppercase}
+.stat.hot .v{color:var(--hot)}
+
+.list{margin-top:14px}
+.list .row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:var(--mono);
+  font-size:11.5px;padding:6px 8px;border-radius:6px;color:var(--muted);cursor:pointer;transition:.12s}
+.list .row:hover{background:var(--panel2);color:var(--text)}
+.list .row .loc{color:var(--faint)}
+.list .row .bar{flex:1;height:5px;border-radius:3px;background:var(--line);position:relative;margin:0 4px}
+.list .row .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--amber)}
+.list .row b{color:var(--text);font-weight:600;min-width:46px;text-align:right}
+.empty{font-family:var(--mono);font-size:11.5px;color:var(--faint);padding:6px 2px}
+
+/* compare */
+#compareView{display:none}
+#cmp{width:100%;display:block}
+.cmp-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.cmp-legend .li{font-family:var(--mono);font-size:11.5px;display:flex;align-items:center;gap:7px;
+  padding:5px 10px;border:1px solid var(--line);border-radius:999px;cursor:pointer;color:var(--muted);transition:.12s}
+.cmp-legend .li:hover{border-color:var(--line2)}
+.cmp-legend .li .sw{width:18px;height:3px;border-radius:2px}
+.cmp-legend .li.off{opacity:.38}
+.cmp-table{width:100%;border-collapse:collapse;margin-top:16px;font-family:var(--mono);font-size:12px}
+.cmp-table th{text-align:right;color:var(--faint);font-weight:500;font-size:10.5px;letter-spacing:.06em;
+  text-transform:uppercase;padding:8px 10px;border-bottom:1px solid var(--line)}
+.cmp-table th:first-child{text-align:left}
+.cmp-table td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);color:var(--muted)}
+.cmp-table td:first-child{text-align:left;color:var(--text)}
+.cmp-table td .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:middle}
+.cmp-table tr:hover td{background:var(--panel2)}
+.hint{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:10px}
+.note{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:2px 0 16px;line-height:1.6}
+.note b{color:var(--text);font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Trace Replay</h1>
+      <span class="sub" id="brandSub"></span>
+    </div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <p class="note">Each run is one continuous finger-traced path through a maze. Color reads as <b>time</b> — cool where the path started, warm where it ended — so the chronology is legible straight off the grid. Watch for <b>pauses</b> (hesitation) and <b>overlaps</b> (where the path doubled back over itself).</p>
+
+  <div class="tabs" id="tabs"></div>
+
+  <!-- REPLAY VIEW -->
+  <div class="stage" id="replayView">
+    <div>
+      <div class="canvas-wrap">
+        <canvas id="grid"></canvas>
+        <div class="legend">
+          <span id="rampLabel">start</span>
+          <span class="ramp" id="ramp"></span>
+          <span>end</span>
+        </div>
+        <canvas id="pace"></canvas>
+        <div class="transport">
+          <button class="play" id="play" aria-label="Play"></button>
+          <input type="range" id="scrub" min="0" max="1000" value="0"/>
+          <span class="readout" id="readout"></span>
+        </div>
+        <div class="controls">
+          <div class="seg" id="modeSeg">
+            <button data-m="time" class="on">time</button>
+            <button data-m="speed">pace</button>
+            <button data-m="overlap">overlap</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="cbPause" checked/> pauses</label>
+          <label class="chk"><input type="checkbox" id="cbGrid" checked/> grid</label>
+          <span class="spd">speed
+            <div class="seg" id="spdSeg">
+              <button data-s="1" class="on">1×</button>
+              <button data-s="2">2×</button>
+              <button data-s="4">4×</button>
+            </div>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="statsCard">
+      <h3>Run stats</h3>
+      <div class="stat-grid" id="statGrid"></div>
+      <div class="list" id="pauseList"></div>
+      <div class="list" id="overlapList"></div>
+    </div>
+  </div>
+
+  <!-- COMPARE VIEW -->
+  <div id="compareView">
+    <div class="card">
+      <h3>Progress over time — all runs</h3>
+      <canvas id="cmp"></canvas>
+      <div class="cmp-legend" id="cmpLegend"></div>
+      <p class="hint">Each line shows steps completed against elapsed time. Flat stretches are pauses; steeper slopes are faster stretches. Rings mark hesitations over 1.5&nbsp;s. Click a label to toggle a run. Hover for a readout.</p>
+      <table class="cmp-table" id="cmpTable"></table>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATA = {"player":"610ayprnv6","runs":[{"level":"tutorial","id":"1206","platform":"mobile","created_at":"2026-06-18 16:48:19.619183+00","W":6,"H":6,"pts":[{"x":0,"y":0,"t":0},{"x":1,"y":0,"t":3541},{"x":2,"y":0,"t":3939},{"x":3,"y":0,"t":4197},{"x":4,"y":0,"t":4424},{"x":5,"y":0,"t":5628},{"x":5,"y":1,"t":6227},{"x":5,"y":2,"t":6543},{"x":5,"y":3,"t":6747},{"x":5,"y":4,"t":6951},{"x":5,"y":5,"t":7177},{"x":4,"y":5,"t":7706},{"x":3,"y":5,"t":7912},{"x":2,"y":5,"t":8113},{"x":1,"y":5,"t":8280},{"x":0,"y":5,"t":8481},{"x":0,"y":4,"t":9290},{"x":0,"y":3,"t":9495},{"x":0,"y":2,"t":9683},{"x":0,"y":1,"t":9899},{"x":1,"y":1,"t":10554},{"x":2,"y":1,"t":10743},{"x":3,"y":1,"t":10929},{"x":4,"y":1,"t":11123},{"x":4,"y":2,"t":11895},{"x":4,"y":3,"t":12075},{"x":4,"y":4,"t":12583},{"x":3,"y":4,"t":13083},{"x":2,"y":4,"t":13305},{"x":1,"y":4,"t":13530},{"x":1,"y":3,"t":13927},{"x":1,"y":2,"t":14146}],"totalMs":14146,"steps":32,"unique":32,"revisits":0,"revisitedCells":[],"coverage":88.9,"longestPause":3541,"pauses":[{"step":1,"dt":3541,"x":0,"y":0,"t":0}],"movingMs":10605,"medianStep":225,"start":{"x":0,"y":0},"end":{"x":1,"y":2},"visitCount":{"0,0":1,"1,0":1,"2,0":1,"3,0":1,"4,0":1,"5,0":1,"5,1":1,"5,2":1,"5,3":1,"5,4":1,"5,5":1,"4,5":1,"3,5":1,"2,5":1,"1,5":1,"0,5":1,"0,4":1,"0,3":1,"0,2":1,"0,1":1,"1,1":1,"2,1":1,"3,1":1,"4,1":1,"4,2":1,"4,3":1,"4,4":1,"3,4":1,"2,4":1,"1,4":1,"1,3":1,"1,2":1}},{"level":"round1","id":"1220","platform":"mobile","created_at":"2026-06-18 16:49:08.12173+00","W":6,"H":6,"pts":[{"x":0,"y":0,"t":0},{"x":0,"y":1,"t":9063},{"x":1,"y":1,"t":9512},{"x":1,"y":0,"t":10046},{"x":2,"y":0,"t":28289},{"x":3,"y":0,"t":28532},{"x":4,"y":0,"t":28727},{"x":4,"y":1,"t":29324},{"x":4,"y":2,"t":31528},{"x":5,"y":2,"t":31994},{"x":5,"y":3,"t":32727},{"x":4,"y":3,"t":33166},{"x":4,"y":4,"t":33718},{"x":4,"y":5,"t":35284},{"x":3,"y":5,"t":37126},{"x":3,"y":4,"t":38465},{"x":2,"y":4,"t":38992},{"x":2,"y":5,"t":39383},{"x":1,"y":5,"t":39827},{"x":1,"y":4,"t":40551},{"x":1,"y":3,"t":40946},{"x":2,"y":3,"t":41858},{"x":2,"y":2,"t":43299},{"x":3,"y":2,"t":43711},{"x":2,"y":2,"t":44131},{"x":2,"y":1,"t":44350}],"totalMs":44350,"steps":26,"unique":25,"revisits":1,"revisitedCells":[{"x":2,"y":2,"n":2}],"coverage":69.4,"longestPause":18243,"pauses":[{"step":4,"dt":18243,"x":1,"y":0,"t":10046},{"step":1,"dt":9063,"x":0,"y":0,"t":0},{"step":8,"dt":2204,"x":4,"y":1,"t":29324},{"step":14,"dt":1842,"x":4,"y":5,"t":35284},{"step":13,"dt":1566,"x":4,"y":4,"t":33718}],"movingMs":11432,"medianStep":534,"start":{"x":0,"y":0},"end":{"x":2,"y":1},"visitCount":{"0,0":1,"0,1":1,"1,1":1,"1,0":1,"2,0":1,"3,0":1,"4,0":1,"4,1":1,"4,2":1,"5,2":1,"5,3":1,"4,3":1,"4,4":1,"4,5":1,"3,5":1,"3,4":1,"2,4":1,"2,5":1,"1,5":1,"1,4":1,"1,3":1,"2,3":1,"2,2":2,"3,2":1,"2,1":1}},{"level":"round2","id":"1260","platform":"mobile","created_at":"2026-06-18 16:50:19.412005+00","W":8,"H":8,"pts":[{"x":0,"y":0,"t":0},{"x":1,"y":0,"t":1778},{"x":2,"y":0,"t":1974},{"x":3,"y":0,"t":2218},{"x":4,"y":0,"t":3909},{"x":5,"y":0,"t":20424},{"x":6,"y":0,"t":20890},{"x":6,"y":1,"t":22431},{"x":5,"y":1,"t":23631},{"x":4,"y":1,"t":24531},{"x":4,"y":2,"t":25874},{"x":4,"y":3,"t":29300},{"x":5,"y":3,"t":32390},{"x":5,"y":2,"t":33210},{"x":6,"y":2,"t":35850},{"x":7,"y":2,"t":36387},{"x":7,"y":3,"t":38002},{"x":6,"y":3,"t":39372},{"x":6,"y":4,"t":40119},{"x":7,"y":4,"t":40409},{"x":7,"y":5,"t":40914},{"x":7,"y":6,"t":41227},{"x":7,"y":7,"t":41641},{"x":6,"y":7,"t":42106},{"x":6,"y":6,"t":42452},{"x":6,"y":5,"t":42869},{"x":5,"y":5,"t":43378},{"x":5,"y":4,"t":43752},{"x":4,"y":4,"t":44644},{"x":3,"y":4,"t":45035},{"x":3,"y":3,"t":45555},{"x":3,"y":2,"t":46042},{"x":2,"y":2,"t":46544},{"x":2,"y":3,"t":46953},{"x":1,"y":3,"t":47673},{"x":0,"y":3,"t":53378},{"x":0,"y":4,"t":54430},{"x":1,"y":4,"t":56142},{"x":1,"y":5,"t":57039},{"x":0,"y":5,"t":57722},{"x":0,"y":6,"t":58691},{"x":0,"y":7,"t":62506},{"x":1,"y":7,"t":63262},{"x":1,"y":6,"t":63631},{"x":2,"y":6,"t":64392},{"x":2,"y":7,"t":64788},{"x":3,"y":7,"t":65251},{"x":3,"y":6,"t":65659},{"x":4,"y":6,"t":66056}],"totalMs":66056,"steps":49,"unique":49,"revisits":0,"revisitedCells":[],"coverage":76.6,"longestPause":16515,"pauses":[{"step":5,"dt":16515,"x":4,"y":0,"t":3909},{"step":35,"dt":5705,"x":1,"y":3,"t":47673},{"step":41,"dt":3815,"x":0,"y":6,"t":58691},{"step":11,"dt":3426,"x":4,"y":2,"t":25874},{"step":12,"dt":3090,"x":4,"y":3,"t":29300},{"step":14,"dt":2640,"x":5,"y":2,"t":33210},{"step":1,"dt":1778,"x":0,"y":0,"t":0},{"step":37,"dt":1712,"x":0,"y":4,"t":54430},{"step":4,"dt":1691,"x":3,"y":0,"t":2218},{"step":16,"dt":1615,"x":7,"y":2,"t":36387},{"step":7,"dt":1541,"x":6,"y":0,"t":20890}],"movingMs":22528,"medianStep":720,"start":{"x":0,"y":0},"end":{"x":4,"y":6},"visitCount":{"0,0":1,"1,0":1,"2,0":1,"3,0":1,"4,0":1,"5,0":1,"6,0":1,"6,1":1,"5,1":1,"4,1":1,"4,2":1,"4,3":1,"5,3":1,"5,2":1,"6,2":1,"7,2":1,"7,3":1,"6,3":1,"6,4":1,"7,4":1,"7,5":1,"7,6":1,"7,7":1,"6,7":1,"6,6":1,"6,5":1,"5,5":1,"5,4":1,"4,4":1,"3,4":1,"3,3":1,"3,2":1,"2,2":1,"2,3":1,"1,3":1,"0,3":1,"0,4":1,"1,4":1,"1,5":1,"0,5":1,"0,6":1,"0,7":1,"1,7":1,"1,6":1,"2,6":1,"2,7":1,"3,7":1,"3,6":1,"4,6":1}},{"level":"bonus1","id":"1365","platform":"mobile","created_at":"2026-06-18 16:52:47.732061+00","W":10,"H":10,"pts":[{"x":0,"y":0,"t":0},{"x":1,"y":0,"t":14336},{"x":2,"y":0,"t":14898},{"x":3,"y":0,"t":15521},{"x":3,"y":1,"t":16250},{"x":2,"y":1,"t":16758},{"x":1,"y":1,"t":17066},{"x":1,"y":2,"t":17898},{"x":0,"y":2,"t":18490},{"x":0,"y":3,"t":20306},{"x":0,"y":4,"t":20499},{"x":0,"y":5,"t":20676},{"x":0,"y":6,"t":20880},{"x":0,"y":7,"t":21071},{"x":0,"y":8,"t":21763},{"x":0,"y":9,"t":22250},{"x":1,"y":9,"t":23106},{"x":1,"y":8,"t":23635},{"x":1,"y":7,"t":23948},{"x":1,"y":6,"t":24332},{"x":2,"y":6,"t":24883},{"x":3,"y":6,"t":26230},{"x":3,"y":7,"t":28418},{"x":2,"y":7,"t":28897},{"x":2,"y":8,"t":29634},{"x":2,"y":9,"t":33069},{"x":3,"y":9,"t":35974},{"x":3,"y":8,"t":36341},{"x":3,"y":9,"t":36774},{"x":4,"y":9,"t":37016},{"x":5,"y":9,"t":37174},{"x":6,"y":9,"t":37361},{"x":6,"y":8,"t":37824},{"x":5,"y":8,"t":44796},{"x":5,"y":7,"t":45495},{"x":4,"y":7,"t":45939},{"x":4,"y":6,"t":46664},{"x":4,"y":5,"t":48145},{"x":3,"y":5,"t":48807},{"x":3,"y":4,"t":49249},{"x":2,"y":4,"t":49761},{"x":1,"y":4,"t":50091},{"x":1,"y":3,"t":50454},{"x":2,"y":3,"t":50870},{"x":3,"y":3,"t":51403},{"x":4,"y":3,"t":52055},{"x":4,"y":2,"t":53606},{"x":5,"y":2,"t":55374},{"x":5,"y":1,"t":55710},{"x":5,"y":0,"t":56440},{"x":4,"y":0,"t":56789},{"x":5,"y":0,"t":57164},{"x":6,"y":0,"t":57459},{"x":7,"y":0,"t":57844},{"x":8,"y":0,"t":58052},{"x":9,"y":0,"t":58255},{"x":9,"y":1,"t":58882},{"x":8,"y":1,"t":62985},{"x":7,"y":1,"t":63261},{"x":7,"y":2,"t":64843},{"x":8,"y":2,"t":65425},{"x":9,"y":2,"t":65986},{"x":9,"y":3,"t":66832},{"x":9,"y":4,"t":67594},{"x":8,"y":4,"t":67928},{"x":7,"y":4,"t":68165},{"x":6,"y":4,"t":68739},{"x":6,"y":3,"t":69299},{"x":6,"y":2,"t":69547},{"x":5,"y":2,"t":69962},{"x":5,"y":3,"t":70326},{"x":5,"y":4,"t":70915},{"x":5,"y":5,"t":71350},{"x":5,"y":6,"t":71783},{"x":6,"y":6,"t":72236},{"x":6,"y":7,"t":72641},{"x":7,"y":7,"t":73385},{"x":8,"y":7,"t":73624},{"x":8,"y":6,"t":74151},{"x":8,"y":5,"t":74790},{"x":7,"y":5,"t":75150},{"x":8,"y":5,"t":75448},{"x":9,"y":5,"t":75793},{"x":9,"y":6,"t":76229},{"x":9,"y":7,"t":76417},{"x":9,"y":8,"t":76622},{"x":8,"y":8,"t":76979},{"x":8,"y":9,"t":77293}],"totalMs":77293,"steps":88,"unique":84,"revisits":4,"revisitedCells":[{"x":3,"y":9,"n":2},{"x":5,"y":2,"n":2},{"x":5,"y":0,"n":2},{"x":8,"y":5,"n":2}],"coverage":84.0,"longestPause":14336,"pauses":[{"step":1,"dt":14336,"x":0,"y":0,"t":0},{"step":33,"dt":6972,"x":6,"y":8,"t":37824},{"step":57,"dt":4103,"x":9,"y":1,"t":58882},{"step":25,"dt":3435,"x":2,"y":8,"t":29634},{"step":26,"dt":2905,"x":2,"y":9,"t":33069},{"step":22,"dt":2188,"x":3,"y":6,"t":26230},{"step":9,"dt":1816,"x":0,"y":2,"t":18490},{"step":47,"dt":1768,"x":4,"y":2,"t":53606},{"step":59,"dt":1582,"x":7,"y":1,"t":63261},{"step":46,"dt":1551,"x":4,"y":3,"t":52055}],"movingMs":36637,"medianStep":463,"start":{"x":0,"y":0},"end":{"x":8,"y":9},"visitCount":{"0,0":1,"1,0":1,"2,0":1,"3,0":1,"3,1":1,"2,1":1,"1,1":1,"1,2":1,"0,2":1,"0,3":1,"0,4":1,"0,5":1,"0,6":1,"0,7":1,"0,8":1,"0,9":1,"1,9":1,"1,8":1,"1,7":1,"1,6":1,"2,6":1,"3,6":1,"3,7":1,"2,7":1,"2,8":1,"2,9":1,"3,9":2,"3,8":1,"4,9":1,"5,9":1,"6,9":1,"6,8":1,"5,8":1,"5,7":1,"4,7":1,"4,6":1,"4,5":1,"3,5":1,"3,4":1,"2,4":1,"1,4":1,"1,3":1,"2,3":1,"3,3":1,"4,3":1,"4,2":1,"5,2":2,"5,1":1,"5,0":2,"4,0":1,"6,0":1,"7,0":1,"8,0":1,"9,0":1,"9,1":1,"8,1":1,"7,1":1,"7,2":1,"8,2":1,"9,2":1,"9,3":1,"9,4":1,"8,4":1,"7,4":1,"6,4":1,"6,3":1,"6,2":1,"5,3":1,"5,4":1,"5,5":1,"5,6":1,"6,6":1,"6,7":1,"7,7":1,"8,7":1,"8,6":1,"8,5":2,"7,5":1,"9,5":1,"9,6":1,"9,7":1,"9,8":1,"8,8":1,"8,9":1}},{"level":"bonus2","id":"1419","platform":"mobile","created_at":"2026-06-18 16:54:23.259108+00","W":12,"H":12,"pts":[{"x":0,"y":0,"t":0},{"x":1,"y":0,"t":2332},{"x":1,"y":1,"t":2712},{"x":0,"y":1,"t":3057},{"x":0,"y":2,"t":3547},{"x":1,"y":2,"t":4138},{"x":2,"y":2,"t":4357},{"x":2,"y":3,"t":4812},{"x":1,"y":3,"t":5225},{"x":0,"y":3,"t":5715},{"x":0,"y":4,"t":9793},{"x":1,"y":4,"t":15053},{"x":2,"y":4,"t":15294},{"x":3,"y":4,"t":15554},{"x":4,"y":4,"t":15966},{"x":4,"y":3,"t":16541},{"x":5,"y":3,"t":21068},{"x":6,"y":3,"t":23759},{"x":6,"y":2,"t":24349},{"x":7,"y":2,"t":26491},{"x":7,"y":3,"t":27093},{"x":7,"y":4,"t":29329},{"x":6,"y":4,"t":29960},{"x":5,"y":4,"t":30910},{"x":5,"y":5,"t":32265},{"x":5,"y":6,"t":34751},{"x":5,"y":7,"t":36026},{"x":4,"y":7,"t":37422},{"x":4,"y":6,"t":38174},{"x":4,"y":5,"t":38594},{"x":3,"y":5,"t":39036},{"x":3,"y":6,"t":39374},{"x":2,"y":6,"t":39738},{"x":2,"y":5,"t":40070},{"x":1,"y":5,"t":40686},{"x":0,"y":5,"t":41784},{"x":0,"y":6,"t":42531},{"x":1,"y":6,"t":42894},{"x":1,"y":7,"t":43613},{"x":0,"y":7,"t":44373},{"x":0,"y":8,"t":44726},{"x":0,"y":9,"t":44928},{"x":0,"y":10,"t":45107},{"x":0,"y":11,"t":45284},{"x":1,"y":11,"t":45724},{"x":2,"y":11,"t":46135},{"x":3,"y":11,"t":47837},{"x":3,"y":10,"t":48169},{"x":2,"y":10,"t":48516},{"x":2,"y":9,"t":48948},{"x":3,"y":9,"t":49386},{"x":3,"y":8,"t":49885},{"x":4,"y":8,"t":50326},{"x":4,"y":9,"t":50922},{"x":5,"y":9,"t":51427},{"x":5,"y":8,"t":52852},{"x":6,"y":8,"t":53677},{"x":6,"y":9,"t":54901},{"x":6,"y":10,"t":55111},{"x":6,"y":11,"t":55671},{"x":7,"y":11,"t":56198},{"x":8,"y":11,"t":56485},{"x":9,"y":11,"t":56696},{"x":10,"y":11,"t":56853},{"x":11,"y":11,"t":57040},{"x":11,"y":10,"t":57497},{"x":11,"y":9,"t":59262},{"x":11,"y":8,"t":59433},{"x":11,"y":7,"t":59636},{"x":11,"y":6,"t":59825},{"x":11,"y":5,"t":60007},{"x":10,"y":5,"t":62161},{"x":9,"y":5,"t":62617},{"x":9,"y":6,"t":63210},{"x":10,"y":6,"t":63572},{"x":10,"y":7,"t":65016},{"x":10,"y":8,"t":68410},{"x":10,"y":9,"t":68788},{"x":10,"y":10,"t":69157},{"x":9,"y":10,"t":70732},{"x":8,"y":10,"t":71108},{"x":7,"y":10,"t":71492},{"x":7,"y":9,"t":71885},{"x":8,"y":9,"t":72283},{"x":9,"y":9,"t":72781},{"x":9,"y":8,"t":73901},{"x":9,"y":7,"t":74263},{"x":8,"y":7,"t":75789},{"x":8,"y":8,"t":76071},{"x":7,"y":8,"t":76434},{"x":7,"y":7,"t":76885},{"x":6,"y":7,"t":77312},{"x":6,"y":6,"t":77927},{"x":6,"y":5,"t":78883},{"x":7,"y":5,"t":79595},{"x":7,"y":6,"t":79956},{"x":8,"y":6,"t":80272},{"x":8,"y":5,"t":80762},{"x":8,"y":4,"t":80973},{"x":8,"y":3,"t":81403},{"x":8,"y":2,"t":82255},{"x":9,"y":2,"t":83152},{"x":10,"y":2,"t":83540},{"x":10,"y":3,"t":84082},{"x":11,"y":3,"t":84577},{"x":11,"y":2,"t":85329},{"x":11,"y":1,"t":86683},{"x":11,"y":0,"t":86859},{"x":10,"y":0,"t":87390},{"x":10,"y":1,"t":87843},{"x":9,"y":1,"t":88264},{"x":9,"y":0,"t":88593},{"x":8,"y":0,"t":89035},{"x":8,"y":1,"t":89879},{"x":7,"y":1,"t":90219},{"x":7,"y":0,"t":90536},{"x":6,"y":0,"t":91229},{"x":5,"y":0,"t":91430},{"x":5,"y":1,"t":91933},{"x":4,"y":1,"t":92237},{"x":3,"y":1,"t":92440}],"totalMs":92440,"steps":121,"unique":121,"revisits":0,"revisitedCells":[],"coverage":84.0,"longestPause":5260,"pauses":[{"step":11,"dt":5260,"x":0,"y":4,"t":9793},{"step":16,"dt":4527,"x":4,"y":3,"t":16541},{"step":10,"dt":4078,"x":0,"y":3,"t":5715},{"step":76,"dt":3394,"x":10,"y":7,"t":65016},{"step":17,"dt":2691,"x":5,"y":3,"t":21068},{"step":25,"dt":2486,"x":5,"y":5,"t":32265},{"step":1,"dt":2332,"x":0,"y":0,"t":0},{"step":21,"dt":2236,"x":7,"y":3,"t":27093},{"step":71,"dt":2154,"x":11,"y":5,"t":60007},{"step":19,"dt":2142,"x":6,"y":2,"t":24349},{"step":66,"dt":1765,"x":11,"y":10,"t":57497},{"step":46,"dt":1702,"x":2,"y":11,"t":46135},{"step":79,"dt":1575,"x":10,"y":10,"t":69157},{"step":87,"dt":1526,"x":9,"y":7,"t":74263}],"movingMs":54572,"medianStep":455,"start":{"x":0,"y":0},"end":{"x":3,"y":1},"visitCount":{"0,0":1,"1,0":1,"1,1":1,"0,1":1,"0,2":1,"1,2":1,"2,2":1,"2,3":1,"1,3":1,"0,3":1,"0,4":1,"1,4":1,"2,4":1,"3,4":1,"4,4":1,"4,3":1,"5,3":1,"6,3":1,"6,2":1,"7,2":1,"7,3":1,"7,4":1,"6,4":1,"5,4":1,"5,5":1,"5,6":1,"5,7":1,"4,7":1,"4,6":1,"4,5":1,"3,5":1,"3,6":1,"2,6":1,"2,5":1,"1,5":1,"0,5":1,"0,6":1,"1,6":1,"1,7":1,"0,7":1,"0,8":1,"0,9":1,"0,10":1,"0,11":1,"1,11":1,"2,11":1,"3,11":1,"3,10":1,"2,10":1,"2,9":1,"3,9":1,"3,8":1,"4,8":1,"4,9":1,"5,9":1,"5,8":1,"6,8":1,"6,9":1,"6,10":1,"6,11":1,"7,11":1,"8,11":1,"9,11":1,"10,11":1,"11,11":1,"11,10":1,"11,9":1,"11,8":1,"11,7":1,"11,6":1,"11,5":1,"10,5":1,"9,5":1,"9,6":1,"10,6":1,"10,7":1,"10,8":1,"10,9":1,"10,10":1,"9,10":1,"8,10":1,"7,10":1,"7,9":1,"8,9":1,"9,9":1,"9,8":1,"9,7":1,"8,7":1,"8,8":1,"7,8":1,"7,7":1,"6,7":1,"6,6":1,"6,5":1,"7,5":1,"7,6":1,"8,6":1,"8,5":1,"8,4":1,"8,3":1,"8,2":1,"9,2":1,"10,2":1,"10,3":1,"11,3":1,"11,2":1,"11,1":1,"11,0":1,"10,0":1,"10,1":1,"9,1":1,"9,0":1,"8,0":1,"8,1":1,"7,1":1,"7,0":1,"6,0":1,"5,0":1,"5,1":1,"4,1":1,"3,1":1}},{"level":"bonus3","id":"1495","platform":"mobile","created_at":"2026-06-18 16:56:52.795855+00","W":14,"H":14,"pts":[{"x":0,"y":0,"t":0},{"x":1,"y":0,"t":8068},{"x":1,"y":1,"t":8332},{"x":2,"y":1,"t":8667},{"x":2,"y":0,"t":9046},{"x":3,"y":0,"t":9456},{"x":3,"y":1,"t":9868},{"x":4,"y":1,"t":10230},{"x":4,"y":0,"t":10612},{"x":5,"y":0,"t":11028},{"x":5,"y":1,"t":12931},{"x":6,"y":1,"t":13239},{"x":6,"y":0,"t":13547},{"x":7,"y":0,"t":14126},{"x":8,"y":0,"t":14618},{"x":9,"y":0,"t":15829},{"x":10,"y":0,"t":16966},{"x":11,"y":0,"t":17155},{"x":12,"y":0,"t":17326},{"x":12,"y":1,"t":18101},{"x":11,"y":1,"t":18423},{"x":10,"y":1,"t":18604},{"x":9,"y":1,"t":18799},{"x":9,"y":2,"t":19616},{"x":10,"y":2,"t":21814},{"x":11,"y":2,"t":21982},{"x":12,"y":2,"t":22185},{"x":12,"y":3,"t":23550},{"x":13,"y":3,"t":23918},{"x":13,"y":4,"t":24896},{"x":12,"y":4,"t":25166},{"x":11,"y":4,"t":26119},{"x":11,"y":3,"t":26439},{"x":10,"y":3,"t":26846},{"x":9,"y":3,"t":27065},{"x":8,"y":3,"t":27623},{"x":8,"y":2,"t":27963},{"x":7,"y":2,"t":28423},{"x":6,"y":2,"t":28628},{"x":6,"y":3,"t":33101},{"x":7,"y":3,"t":37267},{"x":7,"y":4,"t":38722},{"x":8,"y":4,"t":39087},{"x":9,"y":4,"t":39318},{"x":10,"y":4,"t":39808},{"x":10,"y":5,"t":41984},{"x":9,"y":5,"t":42375},{"x":8,"y":5,"t":44986},{"x":7,"y":5,"t":46179},{"x":7,"y":6,"t":47629},{"x":7,"y":7,"t":48316},{"x":6,"y":7,"t":48656},{"x":5,"y":7,"t":49447},{"x":5,"y":6,"t":49828},{"x":5,"y":5,"t":50871},{"x":6,"y":5,"t":51670},{"x":6,"y":4,"t":51987},{"x":5,"y":4,"t":52476},{"x":5,"y":3,"t":52915},{"x":4,"y":3,"t":53632},{"x":4,"y":2,"t":54894},{"x":3,"y":2,"t":55324},{"x":2,"y":2,"t":55533},{"x":1,"y":2,"t":55714},{"x":0,"y":2,"t":55893},{"x":0,"y":3,"t":57051},{"x":1,"y":3,"t":57304},{"x":2,"y":3,"t":57539},{"x":3,"y":3,"t":57707},{"x":3,"y":4,"t":58194},{"x":2,"y":4,"t":58672},{"x":1,"y":4,"t":58911},{"x":0,"y":4,"t":59126},{"x":0,"y":5,"t":59639},{"x":1,"y":5,"t":60058},{"x":2,"y":5,"t":60252},{"x":3,"y":5,"t":60430},{"x":4,"y":5,"t":61040},{"x":4,"y":6,"t":61430},{"x":3,"y":6,"t":65640},{"x":2,"y":6,"t":65867},{"x":1,"y":6,"t":66128},{"x":0,"y":6,"t":66563},{"x":0,"y":7,"t":67090},{"x":1,"y":7,"t":67448},{"x":1,"y":8,"t":67827},{"x":0,"y":8,"t":69611},{"x":0,"y":9,"t":71936},{"x":1,"y":9,"t":74446},{"x":2,"y":9,"t":75458},{"x":2,"y":8,"t":76293},{"x":3,"y":8,"t":76655},{"x":3,"y":7,"t":77033},{"x":4,"y":7,"t":77463},{"x":4,"y":8,"t":78343},{"x":5,"y":8,"t":78838},{"x":6,"y":8,"t":79320},{"x":7,"y":8,"t":79641},{"x":8,"y":8,"t":80226},{"x":8,"y":7,"t":80729},{"x":9,"y":7,"t":81107},{"x":9,"y":6,"t":81672},{"x":10,"y":6,"t":82068},{"x":11,"y":6,"t":82920},{"x":11,"y":5,"t":83329},{"x":12,"y":5,"t":84623},{"x":13,"y":5,"t":85128},{"x":13,"y":6,"t":85967},{"x":12,"y":6,"t":87020},{"x":12,"y":7,"t":89711},{"x":13,"y":7,"t":90084},{"x":12,"y":7,"t":90509},{"x":12,"y":8,"t":94760},{"x":12,"y":9,"t":95175},{"x":12,"y":10,"t":95651},{"x":13,"y":10,"t":96148},{"x":13,"y":11,"t":96633},{"x":12,"y":11,"t":97006},{"x":12,"y":12,"t":97463},{"x":13,"y":12,"t":98657},{"x":13,"y":13,"t":99093},{"x":12,"y":13,"t":99530},{"x":11,"y":13,"t":99857},{"x":10,"y":13,"t":100369},{"x":10,"y":12,"t":101226},{"x":11,"y":12,"t":101687},{"x":11,"y":11,"t":102056},{"x":10,"y":11,"t":103085},{"x":9,"y":11,"t":106330},{"x":9,"y":12,"t":107172},{"x":8,"y":12,"t":108228},{"x":8,"y":13,"t":108953},{"x":7,"y":13,"t":112860},{"x":7,"y":12,"t":113273},{"x":7,"y":11,"t":114570},{"x":8,"y":11,"t":115016},{"x":8,"y":10,"t":115431},{"x":9,"y":10,"t":116038},{"x":9,"y":9,"t":118499},{"x":10,"y":9,"t":118853},{"x":11,"y":9,"t":119141},{"x":11,"y":8,"t":119756},{"x":11,"y":7,"t":120363},{"x":10,"y":7,"t":121191},{"x":10,"y":8,"t":121491},{"x":9,"y":8,"t":121860},{"x":8,"y":8,"t":122289},{"x":8,"y":9,"t":122656},{"x":7,"y":9,"t":123102},{"x":6,"y":9,"t":124545},{"x":5,"y":9,"t":124753},{"x":4,"y":9,"t":124981},{"x":3,"y":9,"t":125173},{"x":3,"y":10,"t":126085},{"x":4,"y":10,"t":126647},{"x":5,"y":10,"t":127070},{"x":6,"y":10,"t":127926},{"x":7,"y":10,"t":128276},{"x":7,"y":11,"t":128690},{"x":6,"y":11,"t":129035},{"x":5,"y":11,"t":130016},{"x":5,"y":12,"t":130376},{"x":5,"y":13,"t":130643},{"x":6,"y":13,"t":131021},{"x":5,"y":13,"t":131456},{"x":4,"y":13,"t":131643},{"x":3,"y":13,"t":131891},{"x":3,"y":12,"t":133591},{"x":3,"y":11,"t":134072},{"x":4,"y":11,"t":134356},{"x":3,"y":11,"t":134732},{"x":2,"y":11,"t":136365},{"x":2,"y":12,"t":136827},{"x":2,"y":11,"t":137256},{"x":2,"y":10,"t":137755},{"x":1,"y":10,"t":140194},{"x":0,"y":10,"t":140676},{"x":0,"y":11,"t":141791},{"x":1,"y":11,"t":142107},{"x":0,"y":11,"t":142499},{"x":0,"y":12,"t":142861},{"x":0,"y":13,"t":143074},{"x":1,"y":13,"t":143441}],"totalMs":143441,"steps":183,"unique":176,"revisits":7,"revisitedCells":[{"x":8,"y":8,"n":2},{"x":12,"y":7,"n":2},{"x":7,"y":11,"n":2},{"x":5,"y":13,"n":2},{"x":3,"y":11,"n":2},{"x":2,"y":11,"n":2},{"x":0,"y":11,"n":2}],"coverage":89.8,"longestPause":8068,"pauses":[{"step":1,"dt":8068,"x":0,"y":0,"t":0},{"step":39,"dt":4473,"x":6,"y":2,"t":28628},{"step":112,"dt":4251,"x":12,"y":7,"t":90509},{"step":79,"dt":4210,"x":4,"y":6,"t":61430},{"step":40,"dt":4166,"x":6,"y":3,"t":33101},{"step":132,"dt":3907,"x":8,"y":13,"t":108953},{"step":128,"dt":3245,"x":10,"y":11,"t":103085},{"step":109,"dt":2691,"x":12,"y":6,"t":87020},{"step":47,"dt":2611,"x":9,"y":5,"t":42375},{"step":88,"dt":2510,"x":0,"y":9,"t":71936},{"step":138,"dt":2461,"x":9,"y":10,"t":116038},{"step":175,"dt":2439,"x":2,"y":10,"t":137755},{"step":87,"dt":2325,"x":0,"y":8,"t":69611},{"step":24,"dt":2198,"x":9,"y":2,"t":19616},{"step":45,"dt":2176,"x":10,"y":4,"t":39808},{"step":10,"dt":1903,"x":5,"y":0,"t":11028},{"step":86,"dt":1784,"x":1,"y":8,"t":67827},{"step":167,"dt":1700,"x":3,"y":13,"t":131891},{"step":171,"dt":1633,"x":3,"y":11,"t":134732}],"movingMs":84690,"medianStep":437,"start":{"x":0,"y":0},"end":{"x":1,"y":13},"visitCount":{"0,0":1,"1,0":1,"1,1":1,"2,1":1,"2,0":1,"3,0":1,"3,1":1,"4,1":1,"4,0":1,"5,0":1,"5,1":1,"6,1":1,"6,0":1,"7,0":1,"8,0":1,"9,0":1,"10,0":1,"11,0":1,"12,0":1,"12,1":1,"11,1":1,"10,1":1,"9,1":1,"9,2":1,"10,2":1,"11,2":1,"12,2":1,"12,3":1,"13,3":1,"13,4":1,"12,4":1,"11,4":1,"11,3":1,"10,3":1,"9,3":1,"8,3":1,"8,2":1,"7,2":1,"6,2":1,"6,3":1,"7,3":1,"7,4":1,"8,4":1,"9,4":1,"10,4":1,"10,5":1,"9,5":1,"8,5":1,"7,5":1,"7,6":1,"7,7":1,"6,7":1,"5,7":1,"5,6":1,"5,5":1,"6,5":1,"6,4":1,"5,4":1,"5,3":1,"4,3":1,"4,2":1,"3,2":1,"2,2":1,"1,2":1,"0,2":1,"0,3":1,"1,3":1,"2,3":1,"3,3":1,"3,4":1,"2,4":1,"1,4":1,"0,4":1,"0,5":1,"1,5":1,"2,5":1,"3,5":1,"4,5":1,"4,6":1,"3,6":1,"2,6":1,"1,6":1,"0,6":1,"0,7":1,"1,7":1,"1,8":1,"0,8":1,"0,9":1,"1,9":1,"2,9":1,"2,8":1,"3,8":1,"3,7":1,"4,7":1,"4,8":1,"5,8":1,"6,8":1,"7,8":1,"8,8":2,"8,7":1,"9,7":1,"9,6":1,"10,6":1,"11,6":1,"11,5":1,"12,5":1,"13,5":1,"13,6":1,"12,6":1,"12,7":2,"13,7":1,"12,8":1,"12,9":1,"12,10":1,"13,10":1,"13,11":1,"12,11":1,"12,12":1,"13,12":1,"13,13":1,"12,13":1,"11,13":1,"10,13":1,"10,12":1,"11,12":1,"11,11":1,"10,11":1,"9,11":1,"9,12":1,"8,12":1,"8,13":1,"7,13":1,"7,12":1,"7,11":2,"8,11":1,"8,10":1,"9,10":1,"9,9":1,"10,9":1,"11,9":1,"11,8":1,"11,7":1,"10,7":1,"10,8":1,"9,8":1,"8,9":1,"7,9":1,"6,9":1,"5,9":1,"4,9":1,"3,9":1,"3,10":1,"4,10":1,"5,10":1,"6,10":1,"7,10":1,"6,11":1,"5,11":1,"5,12":1,"5,13":2,"6,13":1,"4,13":1,"3,13":1,"3,12":1,"3,11":2,"4,11":1,"2,11":2,"2,12":1,"2,10":1,"1,10":1,"0,10":1,"0,11":2,"1,11":1,"0,12":1,"0,13":1,"1,13":1}}]};
+const RUNS = DATA.runs;
+const CMP_COLORS = ['#5b8cff','#1fb6c9','#3ddc97','#f5b841','#ff8a5b','#ff5c8a'];
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const S = {
+  view:'replay', run:0, mode:'time', showPause:true, showGrid:true,
+  playing:false, t:0, speed:1, lastTs:null,
+  cmpOff:new Set(), cmpHoverX:null
+};
+
+const PLAY_SVG='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const PAUSE_SVG='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+
+/* ---------- helpers ---------- */
+function lerp(a,b,t){return a+(b-a)*t}
+function hex2rgb(h){return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]}
+const TIME_STOPS=['#5b8cff','#1fb6c9','#f5b841','#ff5c8a'].map(hex2rgb);
+const SPEED_STOPS=['#1fb6c9','#3ddc97','#f5b841','#ff5c8a'].map(hex2rgb);
+function ramp(stops,p){
+  p=Math.max(0,Math.min(1,p));
+  const seg=(stops.length-1), x=p*seg, i=Math.min(seg-1,Math.floor(x)), f=x-i;
+  const a=stops[i], b=stops[i+1];
+  return `rgb(${Math.round(lerp(a[0],b[0],f))},${Math.round(lerp(a[1],b[1],f))},${Math.round(lerp(a[2],b[2],f))})`;
+}
+function timeColor(p){return ramp(TIME_STOPS,p)}
+function speedColor(dt){ // 150ms fast -> 2500ms slow (log)
+  const lo=Math.log(150), hi=Math.log(2500);
+  const p=(Math.log(Math.max(120,Math.min(dt,2500)))-lo)/(hi-lo);
+  return ramp(SPEED_STOPS,p);
+}
+function fmt(ms){
+  const s=ms/1000;
+  if(s<60) return s.toFixed(1)+'s';
+  const m=Math.floor(s/60); return m+':'+String(Math.floor(s%60)).padStart(2,'0');
+}
+function fmtClock(ms){
+  const s=Math.floor(ms/1000), m=Math.floor(s/60), r=s%60, d=Math.floor((ms%1000)/100);
+  return (m>0? m+':'+String(r).padStart(2,'0') : r+'.'+d)+(m>0?'.'+d:'s');
+}
+
+/* precompute revisit flags per run */
+RUNS.forEach(r=>{
+  const first={}; r.pts.forEach((p,i)=>{const k=p.x+','+p.y; if(first[k]===undefined)first[k]=i; p._rev=first[k]<i;});
+});
+
+/* ---------- DOM ---------- */
+const elTabs=document.getElementById('tabs');
+const grid=document.getElementById('grid'), gctx=grid.getContext('2d');
+const pace=document.getElementById('pace'), pctx=pace.getContext('2d');
+const cmp=document.getElementById('cmp'), cctx=cmp.getContext('2d');
+const playBtn=document.getElementById('play');
+const scrub=document.getElementById('scrub');
+const readout=document.getElementById('readout');
+const ramps={el:document.getElementById('ramp')};
+
+/* header */
+document.getElementById('brandSub').innerHTML='<span class="dot"></span>player '+DATA.player+' · '+RUNS.length+' runs · mobile';
+document.getElementById('meta').innerHTML='<b>session</b> '+RUNS[0].created_at.slice(0,10)+'<br><b>levels</b> tutorial → bonus3';
+
+/* tabs */
+RUNS.forEach((r,i)=>{
+  const b=document.createElement('button'); b.className='tab';
+  b.innerHTML='<span class="sw" style="background:'+CMP_COLORS[i]+'"></span>'+r.level;
+  b.onclick=()=>{S.view='replay';selectRun(i);syncTabs();};
+  elTabs.appendChild(b);
+});
+const cmpTab=document.createElement('button');
+cmpTab.className='tab cmp sep'; cmpTab.textContent='compare all';
+cmpTab.onclick=()=>{S.view='compare';stopPlay();syncTabs();showView();drawCompare();};
+elTabs.appendChild(cmpTab);
+
+function syncTabs(){
+  [...elTabs.children].forEach((b,i)=>{
+    if(i<RUNS.length){ b.classList.toggle('active', S.view==='replay'&&i===S.run);
+      if(S.view==='replay'&&i===S.run) b.style.background=CMP_COLORS[i]; else b.style.background='';}
+  });
+  cmpTab.classList.toggle('active', S.view==='compare');
+}
+function showView(){
+  document.getElementById('replayView').style.display = S.view==='replay'?'grid':'none';
+  document.getElementById('compareView').style.display = S.view==='compare'?'block':'none';
+}
+
+/* ---------- sizing ---------- */
+function fitCanvas(c,ctx,h){
+  const w=c.clientWidth; const dpr=window.devicePixelRatio||1;
+  c.width=w*dpr; c.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {w,h};
+}
+
+/* ---------- replay ---------- */
+function run(){return RUNS[S.run]}
+function curIndex(){ // last point index with t<=S.t
+  const p=run().pts; let lo=0,hi=p.length-1,ans=0;
+  while(lo<=hi){const m=(lo+hi)>>1; if(p[m].t<=S.t){ans=m;lo=m+1}else hi=m-1}
+  return ans;
+}
+
+function drawGrid(){
+  const r=run();
+  const size=Math.min(grid.parentElement.clientWidth-28, 560);
+  const {w}=fitCanvas(grid,gctx,size);
+  const pad=18, area=w-pad*2;
+  const cell=area/Math.max(r.W,r.H);
+  const offx=pad+(area-cell*r.W)/2, offy=pad+(area-cell*r.H)/2;
+  const cx=(x)=>offx+x*cell+cell/2, cy=(y)=>offy+y*cell+cell/2;
+
+  gctx.clearRect(0,0,w,size);
+  // grid
+  if(S.showGrid){
+    gctx.strokeStyle='rgba(44,64,104,.45)'; gctx.lineWidth=1;
+    for(let x=0;x<=r.W;x++){gctx.beginPath();gctx.moveTo(offx+x*cell,offy);gctx.lineTo(offx+x*cell,offy+r.H*cell);gctx.stroke();}
+    for(let y=0;y<=r.H;y++){gctx.beginPath();gctx.moveTo(offx,offy+y*cell);gctx.lineTo(offx+r.W*cell,offy+y*cell);gctx.stroke();}
+  }
+
+  const pts=r.pts, idx=curIndex();
+  const frac=(()=>{const n=pts[idx+1]; if(!n)return 0; return (S.t-pts[idx].t)/Math.max(1,(n.t-pts[idx].t));})();
+
+  gctx.lineWidth=Math.max(3,cell*0.32); gctx.lineCap='round'; gctx.lineJoin='round';
+
+  // overlap mode: draw base trace muted first
+  if(S.mode==='overlap'){
+    gctx.strokeStyle='rgba(93,111,144,.55)';
+    gctx.beginPath(); gctx.moveTo(cx(pts[0].x),cy(pts[0].y));
+    for(let i=1;i<=idx;i++) gctx.lineTo(cx(pts[i].x),cy(pts[i].y));
+    if(idx+1<pts.length){const a=pts[idx],b=pts[idx+1];gctx.lineTo(lerp(cx(a.x),cx(b.x),frac),lerp(cy(a.y),cy(b.y),frac));}
+    gctx.stroke();
+  }
+
+  // colored segments
+  for(let i=1;i<=idx;i++){
+    const a=pts[i-1], b=pts[i];
+    let col;
+    if(S.mode==='time') col=timeColor(b.t/r.totalMs);
+    else if(S.mode==='speed') col=speedColor(b.t-a.t);
+    else { col = b._rev ? '#ff5c8a' : null; if(!col) continue; }
+    gctx.strokeStyle=col;
+    gctx.beginPath(); gctx.moveTo(cx(a.x),cy(a.y)); gctx.lineTo(cx(b.x),cy(b.y)); gctx.stroke();
+  }
+  // partial current segment
+  if(idx+1<pts.length && frac>0){
+    const a=pts[idx],b=pts[idx+1];
+    let col = S.mode==='time'?timeColor(S.t/r.totalMs): S.mode==='speed'?speedColor(b.t-a.t): (b._rev?'#ff5c8a':'rgba(93,111,144,.55)');
+    gctx.strokeStyle=col; gctx.beginPath(); gctx.moveTo(cx(a.x),cy(a.y));
+    gctx.lineTo(lerp(cx(a.x),cx(b.x),frac),lerp(cy(a.y),cy(b.y),frac)); gctx.stroke();
+  }
+
+  // overlap markers
+  if(S.mode==='overlap'){
+    r.revisitedCells.forEach(c=>{
+      const fi=run().pts.findIndex(p=>p.x===c.x&&p.y===c.y);
+      if(fi<=idx){gctx.fillStyle='#ff5c8a';gctx.beginPath();gctx.arc(cx(c.x),cy(c.y),cell*0.2,0,7);gctx.fill();}
+    });
+  }
+
+  // pause rings
+  if(S.showPause){
+    r.pauses.forEach(p=>{
+      if(pts[p.step] && pts[p.step].t<=S.t+1){
+        const rad=cell*0.28*(1+Math.min(2,p.dt/8000));
+        gctx.strokeStyle='rgba(245,184,65,.85)'; gctx.lineWidth=2;
+        gctx.beginPath(); gctx.arc(cx(p.x),cy(p.y),rad,0,7); gctx.stroke();
+        gctx.lineWidth=Math.max(3,cell*0.32);
+      }
+    });
+  }
+
+  // start marker
+  gctx.fillStyle='#0b1220'; gctx.strokeStyle='#9fb2d4'; gctx.lineWidth=2.5;
+  gctx.beginPath(); gctx.arc(cx(pts[0].x),cy(pts[0].y),cell*0.2,0,7); gctx.fill(); gctx.stroke();
+
+  // comet head
+  let hx,hy;
+  if(idx+1<pts.length && frac>0){const a=pts[idx],b=pts[idx+1];hx=lerp(cx(a.x),cx(b.x),frac);hy=lerp(cy(a.y),cy(b.y),frac);}
+  else {hx=cx(pts[idx].x);hy=cy(pts[idx].y);}
+  const hc = S.mode==='speed'? '#fff' : timeColor(S.t/r.totalMs);
+  if(!reduceMotion){gctx.shadowColor=hc;gctx.shadowBlur=16;}
+  gctx.fillStyle='#fff'; gctx.beginPath(); gctx.arc(hx,hy,Math.max(4,cell*0.22),0,7); gctx.fill();
+  gctx.shadowBlur=0;
+  gctx.fillStyle=hc; gctx.beginPath(); gctx.arc(hx,hy,Math.max(2.5,cell*0.13),0,7); gctx.fill();
+
+  ramps.el.className='ramp'+(S.mode==='speed'?' speed':'');
+  document.getElementById('rampLabel').textContent = S.mode==='speed'?'fast':'start';
+  ramps.el.nextElementSibling.textContent = S.mode==='speed'?'slow':'end';
+}
+
+function drawPace(){
+  const r=run(); const {w,h}=fitCanvas(pace,pctx,54);
+  pctx.clearRect(0,0,w,h);
+  const total=r.totalMs, X=t=>t/total*w;
+  // baseline
+  pctx.fillStyle='rgba(33,48,77,.5)'; pctx.fillRect(0,h-10,w,10);
+  const pts=r.pts;
+  for(let i=1;i<pts.length;i++){
+    const x0=X(pts[i-1].t), x1=X(pts[i].t), bw=Math.max(1,x1-x0);
+    pctx.fillStyle=speedColor(pts[i].t-pts[i-1].t);
+    const bh = 10 + 30*Math.min(1,(pts[i].t-pts[i-1].t)/4000);
+    pctx.fillRect(x0,h-bh,bw,bh);
+  }
+  // pause markers
+  if(S.showPause) r.pauses.forEach(p=>{
+    pctx.strokeStyle='rgba(245,184,65,.9)';pctx.lineWidth=1.5;
+    pctx.beginPath();pctx.moveTo(X(p.t),0);pctx.lineTo(X(p.t),h-10);pctx.stroke();
+  });
+  // playhead
+  const px=X(S.t);
+  pctx.strokeStyle='#fff';pctx.lineWidth=1.5;
+  pctx.beginPath();pctx.moveTo(px,0);pctx.lineTo(px,h);pctx.stroke();
+}
+
+function drawStats(){
+  const r=run();
+  const sg=document.getElementById('statGrid');
+  const cells=[
+    ['time',fmt(r.totalMs),''],
+    ['steps',r.steps,''],
+    ['cells reached',r.unique,''],
+    ['grid coverage',r.coverage,'%'],
+    ['overlaps',r.revisits,r.revisits>0?'hot':''],
+    ['longest pause',(r.longestPause/1000).toFixed(1),'s'],
+    ['moving time',fmt(r.movingMs),''],
+    ['median step',r.medianStep,'ms'],
+  ];
+  sg.innerHTML=cells.map(([k,v,flag])=>{
+    const unit = (k==='grid coverage')?'<span class="u">%</span>':(k==='longest pause')?'<span class="u">s</span>':(k==='median step')?'<span class="u">ms</span>':'';
+    const val = (k==='grid coverage'||k==='longest pause'||k==='median step')? String(v).replace('%','').replace('s','').replace('ms','') : v;
+    return `<div class="stat ${flag==='hot'?'hot':''}"><div class="v">${val}${unit}</div><div class="k">${k}</div></div>`;
+  }).join('');
+
+  // pauses
+  const pl=document.getElementById('pauseList');
+  const maxP=Math.max(1,...r.pauses.map(p=>p.dt));
+  pl.innerHTML='<h3 style="margin-top:16px">Hesitations &gt; 1.5s</h3>'+
+    (r.pauses.length? r.pauses.slice(0,6).map(p=>
+      `<div class="row" data-t="${p.t}"><span class="loc">@${p.x},${p.y}</span>`+
+      `<span class="bar"><i style="width:${100*p.dt/maxP}%"></i></span><b>${(p.dt/1000).toFixed(1)}s</b></div>`
+    ).join('') : '<div class="empty">No pauses over 1.5s — steady run.</div>');
+  pl.querySelectorAll('.row').forEach(row=>row.onclick=()=>{stopPlay();S.t=+row.dataset.t;renderReplay();});
+
+  // overlaps
+  const ol=document.getElementById('overlapList');
+  ol.innerHTML='<h3 style="margin-top:14px">Overlaps (revisited cells)</h3>'+
+    (r.revisitedCells.length? r.revisitedCells.map(c=>
+      `<div class="row"><span class="loc">@${c.x},${c.y}</span><span class="bar" style="max-width:60px"></span><b style="color:var(--hot)">×${c.n}</b></div>`
+    ).join('') : '<div class="empty">Clean path — no cell entered twice.</div>');
+}
+
+function renderReplay(){
+  drawGrid(); drawPace(); 
+  scrub.value=Math.round(S.t/run().totalMs*1000);
+  const idx=curIndex();
+  readout.innerHTML=`${fmtClock(S.t)} <span class="s">/ ${fmt(run().totalMs)}</span> · <span class="s">step</span> ${idx}<span class="s">/${run().steps-1}</span>`;
+}
+
+function selectRun(i){
+  S.run=i; S.t=0; stopPlay(); showView(); drawStats(); renderReplay();
+}
+
+/* ---------- transport ---------- */
+function setPlay(p){
+  S.playing=p; playBtn.innerHTML=p?PAUSE_SVG:PLAY_SVG;
+  if(p){S.lastTs=null; requestAnimationFrame(loop);}
+}
+function stopPlay(){setPlay(false)}
+function loop(ts){
+  if(!S.playing)return;
+  if(S.lastTs!=null){ S.t += (ts-S.lastTs)*S.speed; }
+  S.lastTs=ts;
+  if(S.t>=run().totalMs){S.t=run().totalMs; renderReplay(); stopPlay(); return;}
+  renderReplay(); requestAnimationFrame(loop);
+}
+playBtn.onclick=()=>{ if(S.t>=run().totalMs)S.t=0; setPlay(!S.playing); };
+scrub.oninput=()=>{ stopPlay(); S.t=scrub.value/1000*run().totalMs; renderReplay(); };
+
+function scrubFromPace(e){
+  stopPlay(); const rect=pace.getBoundingClientRect();
+  const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+  S.t=Math.max(0,Math.min(1,x/rect.width))*run().totalMs; renderReplay();
+}
+pace.addEventListener('pointerdown',e=>{pace.setPointerCapture(e.pointerId);scrubFromPace(e);
+  pace.onpointermove=ev=>scrubFromPace(ev);});
+pace.addEventListener('pointerup',()=>{pace.onpointermove=null});
+
+/* mode + options */
+document.getElementById('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;
+  S.mode=b.dataset.m;[...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));renderReplay();};
+document.getElementById('spdSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;
+  S.speed=+b.dataset.s;[...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));};
+document.getElementById('cbPause').onchange=e=>{S.showPause=e.target.checked;renderReplay();};
+document.getElementById('cbGrid').onchange=e=>{S.showGrid=e.target.checked;renderReplay();};
+
+/* ---------- compare ---------- */
+function drawCompare(){
+  const {w,h}=fitCanvas(cmp,cctx, Math.min(440, Math.max(300, window.innerWidth*0.42)));
+  cctx.clearRect(0,0,w,h);
+  const padL=44,padB=34,padT=14,padR=14;
+  const plotW=w-padL-padR, plotH=h-padT-padB;
+  const maxT=Math.max(...RUNS.map(r=>r.totalMs));
+  const maxStep=Math.max(...RUNS.map(r=>r.steps-1));
+  const X=t=>padL + t/maxT*plotW;
+  const Y=s=>padT + plotH - s/maxStep*plotH;
+
+  // grid + axes
+  cctx.strokeStyle='rgba(33,48,77,.7)';cctx.fillStyle='#5d6f90';
+  cctx.font="11px 'IBM Plex Mono',monospace";cctx.lineWidth=1;
+  const tStep= maxT>120000?30000:20000;
+  for(let t=0;t<=maxT;t+=tStep){
+    cctx.beginPath();cctx.moveTo(X(t),padT);cctx.lineTo(X(t),padT+plotH);cctx.stroke();
+    cctx.textAlign='center';cctx.fillText((t/1000)+'s',X(t),h-12);
+  }
+  for(let s=0;s<=maxStep;s+=Math.ceil(maxStep/5/10)*10){
+    cctx.beginPath();cctx.moveTo(padL,Y(s));cctx.lineTo(padL+plotW,Y(s));cctx.stroke();
+    cctx.textAlign='right';cctx.fillText(s,padL-8,Y(s)+4);
+  }
+  cctx.save();cctx.translate(13,padT+plotH/2);cctx.rotate(-Math.PI/2);
+  cctx.textAlign='center';cctx.fillStyle='#8497b6';cctx.fillText('steps completed',0,0);cctx.restore();
+
+  // lines
+  RUNS.forEach((r,i)=>{
+    if(S.cmpOff.has(i))return;
+    cctx.strokeStyle=CMP_COLORS[i];cctx.lineWidth=2;cctx.globalAlpha=.95;
+    cctx.beginPath();
+    r.pts.forEach((p,j)=>{const x=X(p.t),y=Y(j); j?cctx.lineTo(x,y):cctx.moveTo(x,y);});
+    cctx.stroke();
+    // pause rings
+    cctx.globalAlpha=1;
+    r.pauses.forEach(p=>{cctx.strokeStyle=CMP_COLORS[i];cctx.lineWidth=1.3;
+      cctx.beginPath();cctx.arc(X(p.t),Y(p.step-1),3.2,0,7);cctx.stroke();});
+  });
+  cctx.globalAlpha=1;
+
+  // hover crosshair
+  if(S.cmpHoverX!=null){
+    const t=(S.cmpHoverX-padL)/plotW*maxT;
+    if(t>=0&&t<=maxT){
+      cctx.strokeStyle='rgba(255,255,255,.5)';cctx.setLineDash([3,3]);
+      cctx.beginPath();cctx.moveTo(X(t),padT);cctx.lineTo(X(t),padT+plotH);cctx.stroke();cctx.setLineDash([]);
+      // dots + box
+      let lines=[];
+      RUNS.forEach((r,i)=>{if(S.cmpOff.has(i))return;
+        let step=0; for(let j=0;j<r.pts.length;j++){if(r.pts[j].t<=t)step=j;else break;}
+        if(t<=r.totalMs){cctx.fillStyle=CMP_COLORS[i];cctx.beginPath();cctx.arc(X(t),Y(step),3.5,0,7);cctx.fill();
+          lines.push([CMP_COLORS[i],r.level,step]);}
+      });
+      const bx=Math.min(X(t)+10, w-138), by=padT+6;
+      cctx.fillStyle='rgba(11,18,32,.92)';cctx.strokeStyle='#2c4068';
+      cctx.fillRect(bx,by,128,18+lines.length*15);cctx.strokeRect(bx,by,128,18+lines.length*15);
+      cctx.fillStyle='#8497b6';cctx.textAlign='left';cctx.fillText((t/1000).toFixed(1)+'s',bx+8,by+14);
+      lines.forEach((l,k)=>{cctx.fillStyle=l[0];cctx.fillRect(bx+8,by+24+k*15-7,8,8);
+        cctx.fillStyle='#e9eef8';cctx.fillText(l[1],bx+22,by+24+k*15);
+        cctx.textAlign='right';cctx.fillText(l[2],bx+120,by+24+k*15);cctx.textAlign='left';});
+    }
+  }
+
+  // legend
+  const lg=document.getElementById('cmpLegend');
+  lg.innerHTML=RUNS.map((r,i)=>
+    `<span class="li ${S.cmpOff.has(i)?'off':''}" data-i="${i}"><span class="sw" style="background:${CMP_COLORS[i]}"></span>${r.level}</span>`
+  ).join('');
+  lg.querySelectorAll('.li').forEach(li=>li.onclick=()=>{const i=+li.dataset.i;
+    S.cmpOff.has(i)?S.cmpOff.delete(i):S.cmpOff.add(i);drawCompare();});
+
+  // table
+  const tb=document.getElementById('cmpTable');
+  tb.innerHTML='<tr><th>run</th><th>grid</th><th>time</th><th>steps</th><th>coverage</th><th>overlaps</th><th>pauses</th><th>longest</th></tr>'+
+    RUNS.map((r,i)=>`<tr><td><span class="sw" style="background:${CMP_COLORS[i]}"></span>${r.level}</td>`+
+      `<td>${r.W}×${r.H}</td><td>${fmt(r.totalMs)}</td><td>${r.steps}</td><td>${r.coverage}%</td>`+
+      `<td style="color:${r.revisits?'var(--hot)':'inherit'}">${r.revisits}</td><td>${r.pauses.length}</td>`+
+      `<td>${(r.longestPause/1000).toFixed(1)}s</td></tr>`).join('');
+}
+cmp.addEventListener('mousemove',e=>{const r=cmp.getBoundingClientRect();S.cmpHoverX=(e.clientX-r.left);drawCompare();});
+cmp.addEventListener('mouseleave',()=>{S.cmpHoverX=null;drawCompare();});
+
+/* ---------- init ---------- */
+let rt;
+window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{
+  if(S.view==='replay')renderReplay(); else drawCompare();},120);});
+playBtn.innerHTML=PLAY_SVG;
+selectRun(0); syncTabs();
+</script>
+</body>
+</html>

@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Mow Cohort Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0b1220; --panel:#121d31; --panel2:#162338;
+  --line:#21304d; --line2:#2c4068;
+  --text:#e9eef8; --muted:#8497b6; --faint:#5d6f90;
+  --amber:#f5b841;
+  --snake:#3ddc97; --spiral:#5b8cff; --random_walk:#ff5c8a;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:'Space Grotesk',system-ui,-apple-system,Segoe UI,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1200px 700px at 80% -10%, #16223a 0%, transparent 55%),
+    radial-gradient(900px 600px at -10% 110%, #131d33 0%, transparent 50%),
+    var(--ink);
+  color:var(--text); font-family:var(--disp);
+  -webkit-font-smoothing:antialiased; line-height:1.45;
+  padding:20px clamp(14px,3vw,30px) 60px;
+}
+.wrap{max-width:1320px;margin:0 auto}
+header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}
+h1{font-size:clamp(20px,3vw,28px);font-weight:700;letter-spacing:-.02em;margin:0}
+.sub{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 10px var(--amber);margin-right:7px;vertical-align:middle}
+
+.controls{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;margin-bottom:16px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.04em}
+select{background:var(--panel2);color:var(--text);border:1px solid var(--line2);border-radius:7px;
+  padding:6px 8px;font-family:var(--mono);font-size:12px;min-width:120px;cursor:pointer}
+.spacer{flex:1}
+button.reset{background:transparent;color:var(--muted);border:1px solid var(--line2);
+  border-radius:7px;padding:7px 12px;font-family:var(--mono);font-size:12px;cursor:pointer}
+button.reset:hover{color:var(--text);border-color:var(--amber)}
+
+.statsbar{display:flex;flex-wrap:wrap;gap:22px;align-items:center;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:12px 18px;margin-bottom:16px;font-family:var(--mono)}
+.stat{display:flex;flex-direction:column}
+.stat .k{font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.04em}
+.stat .v{font-size:20px;font-weight:600}
+.mix{display:flex;height:14px;width:220px;border-radius:5px;overflow:hidden;border:1px solid var(--line2)}
+.mix span{display:block;height:100%}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--muted)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px;cursor:pointer;
+  transition:border-color .12s, transform .12s}
+.card:hover{border-color:var(--amber);transform:translateY(-2px)}
+.card canvas{width:100%;height:auto;display:block;border-radius:5px;background:#0c1424}
+.card .cap{display:flex;justify-content:space-between;margin-top:7px;font-family:var(--mono);font-size:10.5px}
+.card .cap .lvl{color:var(--text)}
+.card .cap .eff{color:var(--muted)}
+.pat-pill{display:inline-block;font-family:var(--mono);font-size:9.5px;padding:1px 6px;border-radius:20px;margin-top:6px}
+
+.note{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin:14px 0}
+
+/* detail overlay */
+.overlay{position:fixed;inset:0;background:rgba(6,10,18,.78);backdrop-filter:blur(3px);
+  display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+.overlay.on{display:flex}
+.modal{background:var(--panel);border:1px solid var(--line2);border-radius:14px;
+  width:min(680px,96vw);max-height:92vh;overflow:auto;padding:20px}
+.modal h2{margin:0 0 2px;font-size:18px}
+.modal .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:14px}
+.modal canvas{width:100%;height:auto;background:#0c1424;border-radius:9px;border:1px solid var(--line)}
+.row{display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.row input[type=range]{flex:1;accent-color:var(--amber)}
+.kv{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;font-family:var(--mono)}
+.kv .k{font-size:10px;color:var(--faint);text-transform:uppercase}
+.kv .v{font-size:15px;font-weight:600}
+.close{position:absolute;top:16px;right:20px;color:var(--muted);font-size:24px;cursor:pointer;background:none;border:none}
+.demo-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.demo-tags span{font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel2);
+  border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+
+/* tabs */
+.tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+.tabs button{background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:13px;
+  padding:9px 16px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button:hover{color:var(--text)}
+.tabs button.active{color:var(--text);border-bottom-color:var(--amber)}
+.tabpanel{display:none}
+.tabpanel.active{display:block}
+
+/* round maps */
+.maps{display:flex;gap:26px;flex-wrap:wrap}
+.mapfig{margin:0;flex:1;min-width:300px}
+.mapfig figcaption{font-family:var(--mono);font-size:12px;color:var(--text);margin-bottom:8px}
+.mapfig figcaption span{color:var(--faint)}
+.mapfig canvas{width:100%;height:auto;background:#0c1424;border:1px solid var(--line);border-radius:10px}
+.cbar{display:flex;align-items:center;gap:8px;margin-top:8px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.cbar .ramp{flex:1;height:11px;border-radius:4px;border:1px solid var(--line2)}
+.allmaps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.allmaps figure{margin:0}
+.allmaps figcaption{font-family:var(--mono);font-size:12px;color:var(--text);margin-bottom:6px}
+.allmaps canvas{width:100%;height:auto;background:#0c1424;border:1px solid var(--line);border-radius:10px}
+#allLegend{max-width:360px;margin-top:16px}
+.thrval{font-family:var(--mono);font-size:15px;color:var(--amber);font-weight:600}
+input[type=range]{accent-color:var(--amber);cursor:pointer}
+
+/* report */
+.report{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:18px}
+.report figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.report img{width:100%;border-radius:6px;background:#fff;display:block;cursor:zoom-in}
+.report figcaption{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:9px}
+
+/* lightbox for report figures */
+.lightbox{position:fixed;inset:0;background:rgba(6,10,18,.92);backdrop-filter:blur(4px);
+  display:none;align-items:center;justify-content:center;z-index:60;padding:24px;cursor:zoom-out}
+.lightbox.on{display:flex}
+.lightbox img{max-width:96vw;max-height:94vh;border-radius:8px;background:#fff;
+  box-shadow:0 12px 50px rgba(0,0,0,.6)}
+.lightbox .lbclose{position:absolute;top:18px;right:24px;color:var(--text);font-size:30px;
+  background:none;border:none;cursor:pointer;line-height:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1><span class="dot"></span>Mow Cohort Explorer</h1>
+      <div class="sub">filter by round / shape / demographics &middot; click a tile to replay the path</div>
+    </div>
+    <div class="sub" id="loadInfo">loading&hellip;</div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="traces" class="active">traces</button>
+    <button data-tab="maps">round maps</button>
+    <button data-tab="report">report figures</button>
+  </nav>
+
+  <div id="tab-traces" class="tabpanel active">
+  <div class="controls" id="controls"></div>
+
+  <div class="statsbar">
+    <div class="stat"><span class="k">traces</span><span class="v" id="sN">0</span></div>
+    <div class="stat"><span class="k">players</span><span class="v" id="sP">0</span></div>
+    <div class="stat"><span class="k">median optimality</span><span class="v" id="sEff">–</span></div>
+    <div class="stat"><span class="k">median moves</span><span class="v" id="sMov">–</span></div>
+    <div class="stat">
+      <span class="k">shape mix</span>
+      <div class="mix" id="sMix"></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--snake)"></i>snake</span>
+      <span><i style="background:var(--spiral)"></i>spiral</span>
+      <span><i style="background:var(--random_walk)"></i>random</span>
+    </div>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="gallery" id="gallery"></div>
+  </div><!-- /tab-traces -->
+
+  <div id="tab-maps" class="tabpanel">
+    <div class="controls">
+      <div class="field"><label>round</label><select id="mapRound"></select></div>
+      <div class="field" id="metricField" style="display:none"><label>metric</label>
+        <select id="mapMetric">
+          <option value="pause">where players pause</option>
+          <option value="flow">average path</option>
+        </select>
+      </div>
+      <div class="field" id="thrField"><label>pause threshold (seconds)</label>
+        <input type="range" id="thr" min="0.3" max="5" step="0.1" value="1" style="min-width:220px"/>
+      </div>
+      <div class="field" id="thrValField"><label>counts as a pause if &ge;</label><span class="thrval" id="thrVal">1.0 s</span></div>
+      <div class="spacer"></div>
+      <div class="field"><label>at this threshold</label><span class="sub" id="mapStat"></span></div>
+    </div>
+    <div class="maps" id="singleMaps">
+      <figure class="mapfig">
+        <figcaption>Where players stop to think <span id="capPause"></span></figcaption>
+        <canvas id="heatPause" width="560" height="560"></canvas>
+        <div class="cbar"><span>0%</span><div class="ramp" id="rampPause"></div><span>&ge;30%</span></div>
+      </figure>
+      <figure class="mapfig">
+        <figcaption>The average path <span>— when each cell is reached</span></figcaption>
+        <canvas id="heatFlow" width="560" height="560"></canvas>
+        <div class="cbar"><span>start</span><div class="ramp" id="rampFlow"></div><span>end</span></div>
+      </figure>
+    </div>
+    <div class="allmaps" id="allMaps" style="display:none"></div>
+    <div class="cbar" id="allLegend" style="display:none"><span id="allLegL"></span><div class="ramp" id="allRamp"></div><span id="allLegR"></span></div>
+    <div class="note">Recomputed live from every trace's timing. Drag the slider to change what counts as a "thinking" pause. Dark gaps are obstacles (cells visited by &lt;50% of players).</div>
+  </div><!-- /tab-maps -->
+
+  <div id="tab-report" class="tabpanel">
+    <div class="report" id="report"></div>
+  </div><!-- /tab-report -->
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal" style="position:relative">
+    <button class="close" id="mClose">&times;</button>
+    <h2 id="mTitle">trace</h2>
+    <div class="meta" id="mMeta"></div>
+    <canvas id="mCanvas" width="600" height="600"></canvas>
+    <div class="row">
+      <button class="reset" id="mPlay">play</button>
+      <input type="range" id="mScrub" min="0" max="1000" value="1000"/>
+    </div>
+    <div class="kv" id="mKv"></div>
+    <div class="demo-tags" id="mDemo"></div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <button class="lbclose" id="lbClose">&times;</button>
+  <img id="lbImg" src="" alt=""/>
+</div>
+
+<script src="cohort_data.js"></script>
+<script>
+const PAT_COLORS = {snake:'#3ddc97', spiral:'#5b8cff', random_walk:'#ff5c8a'};
+const GALLERY_CAP = 240;
+
+// ---- flatten cohort into a runs array with demographics attached ----
+const C = window.COHORT;
+const RUNS = [];
+for(const u of C.users){
+  for(const r of u.runs){
+    RUNS.push({...r, user_id:u.user_id,
+      age:u.age, style:u.style, gaming:u.gaming, hand:u.hand, optimization:u.optimization});
+  }
+}
+document.getElementById('loadInfo').textContent =
+  RUNS.length.toLocaleString()+' traces · '+C.users.length.toLocaleString()+' players';
+
+// ---- build filter controls ----
+const FILTERS = [
+  {key:'level',  label:'round'},
+  {key:'pattern',label:'shape'},
+  {key:'age',    label:'age'},
+  {key:'style',  label:'style'},
+  {key:'gaming', label:'gaming'},
+  {key:'hand',   label:'hand'},
+  {key:'optimization', label:'optimization'},
+];
+const SORTS = [
+  {key:'eff_desc', label:'optimality ↓'},
+  {key:'eff_asc',  label:'optimality ↑'},
+  {key:'count_desc', label:'popularity ↓ (distinct only)'},
+  {key:'count_asc',  label:'popularity ↑ (distinct only)'},
+  {key:'moves_desc', label:'moves ↓'},
+  {key:'moves_asc',  label:'moves ↑'},
+];
+const VIEWS = [
+  {key:'traces', label:'every trace'},
+  {key:'distinct', label:'distinct solutions'},
+];
+const state = {sort:'eff_desc', view:'traces'};
+FILTERS.forEach(f=>state[f.key]='All');
+
+function uniqVals(key){
+  if(key==='level') return C.levels;
+  if(key==='pattern') return C.patterns;
+  const s = new Set();
+  RUNS.forEach(r=>{ if(r[key]!=null) s.add(r[key]); });
+  return [...s].sort();
+}
+
+const controls = document.getElementById('controls');
+FILTERS.forEach(f=>{
+  const wrap=document.createElement('div'); wrap.className='field';
+  const lab=document.createElement('label'); lab.textContent=f.label;
+  const sel=document.createElement('select');
+  sel.innerHTML='<option>All</option>'+uniqVals(f.key).map(v=>`<option>${v}</option>`).join('');
+  sel.onchange=()=>{state[f.key]=sel.value; render();};
+  wrap.append(lab,sel); controls.append(wrap);
+});
+// view (every trace vs distinct solutions)
+{
+  const wrap=document.createElement('div'); wrap.className='field';
+  const lab=document.createElement('label'); lab.textContent='view';
+  const sel=document.createElement('select');
+  sel.innerHTML=VIEWS.map(v=>`<option value="${v.key}">${v.label}</option>`).join('');
+  sel.onchange=()=>{state.view=sel.value; render();};
+  wrap.append(lab,sel); controls.append(wrap);
+}
+// sort
+{
+  const wrap=document.createElement('div'); wrap.className='field';
+  const lab=document.createElement('label'); lab.textContent='sort';
+  const sel=document.createElement('select');
+  sel.innerHTML=SORTS.map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
+  sel.onchange=()=>{state.sort=sel.value; render();};
+  wrap.append(lab,sel); controls.append(wrap);
+}
+{
+  const sp=document.createElement('div'); sp.className='spacer'; controls.append(sp);
+  const btn=document.createElement('button'); btn.className='reset'; btn.textContent='reset filters';
+  btn.onclick=()=>{ FILTERS.forEach(f=>state[f.key]='All');
+    controls.querySelectorAll('select').forEach((s,i)=>{ if(i<FILTERS.length) s.value='All'; });
+    render(); };
+  controls.append(btn);
+}
+
+function applyFilters(){
+  return RUNS.filter(r=>{
+    for(const f of FILTERS){
+      if(state[f.key]!=='All' && String(r[f.key])!==state[f.key]) return false;
+    }
+    return r.optimality!=null;
+  });
+}
+function sortItems(arr){
+  const s=state.sort;
+  const c=x=>x.count||0;
+  const by={eff_desc:(a,b)=>b.optimality-a.optimality, eff_asc:(a,b)=>a.optimality-b.optimality,
+            moves_desc:(a,b)=>b.moves-a.moves, moves_asc:(a,b)=>a.moves-b.moves,
+            count_desc:(a,b)=>c(b)-c(a)||b.optimality-a.optimality,
+            count_asc:(a,b)=>c(a)-c(b)||b.optimality-a.optimality}[s] || ((a,b)=>0);
+  return [...arr].sort(by);
+}
+// group filtered traces into distinct exact solutions (same path = same cells in
+// same order). Key includes level so identical-size grids don't collide.
+function groupSolutions(arr){
+  const map=new Map();
+  for(const r of arr){
+    const sig=r.level+'|'+r.pts.map(p=>p.x+','+p.y).join(';');
+    let g=map.get(sig);
+    if(!g){ g={...r, count:0, players:new Set()}; map.set(sig,g); }
+    g.count++; g.players.add(r.user_id);
+  }
+  return [...map.values()];
+}
+function median(xs){ if(!xs.length) return null; const a=[...xs].sort((x,y)=>x-y);
+  const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; }
+
+// ---- path drawing ----
+function drawPath(ctx, pts, W, H, opt){
+  opt=opt||{};
+  const cw=ctx.canvas.width, ch=ctx.canvas.height, pad=opt.pad??10;
+  ctx.clearRect(0,0,cw,ch);
+  const gw=Math.max(W,1), gh=Math.max(H,1);
+  const cell=Math.min((cw-2*pad)/gw,(ch-2*pad)/gh);
+  const ox=(cw-cell*gw)/2, oy=(ch-cell*gh)/2;
+  const X=x=>ox+(x+0.5)*cell, Y=y=>oy+(y+0.5)*cell;
+  // grid
+  if(opt.grid!==false){
+    ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1;
+    for(let i=0;i<=gw;i++){ctx.beginPath();ctx.moveTo(ox+i*cell,oy);ctx.lineTo(ox+i*cell,oy+gh*cell);ctx.stroke();}
+    for(let j=0;j<=gh;j++){ctx.beginPath();ctx.moveTo(ox,oy+j*cell);ctx.lineTo(ox+gw*cell,oy+j*cell);ctx.stroke();}
+  }
+  const n = opt.upto!=null ? Math.min(opt.upto,pts.length) : pts.length;
+  // visit counts up to n for revisit shading
+  const seen={};
+  ctx.lineWidth=Math.max(1.6,cell*0.16); ctx.lineJoin='round'; ctx.lineCap='round';
+  ctx.strokeStyle=opt.color||'#5b8cff';
+  ctx.beginPath();
+  for(let i=0;i<n;i++){ const p=pts[i]; (i===0?ctx.moveTo:ctx.lineTo).call(ctx,X(p.x),Y(p.y)); }
+  ctx.stroke();
+  // revisited cells
+  for(let i=0;i<n;i++){const k=pts[i].x+','+pts[i].y; seen[k]=(seen[k]||0)+1;}
+  for(let i=0;i<n;i++){const p=pts[i],k=p.x+','+p.y; if(seen[k]>1){
+    ctx.fillStyle='rgba(255,92,138,0.5)'; ctx.beginPath();
+    ctx.arc(X(p.x),Y(p.y),cell*0.16,0,7); ctx.fill();
+  }}
+  // start / current
+  if(n>0){
+    ctx.fillStyle='#3ddc97'; ctx.beginPath(); ctx.arc(X(pts[0].x),Y(pts[0].y),cell*0.2,0,7); ctx.fill();
+    const e=pts[n-1]; ctx.fillStyle=opt.color||'#f5b841'; ctx.beginPath();
+    ctx.arc(X(e.x),Y(e.y),cell*0.2,0,7); ctx.fill();
+  }
+}
+
+// ---- render gallery ----
+const gallery=document.getElementById('gallery');
+function render(){
+  const filtered=applyFilters();
+  const distinct=state.view==='distinct';
+  const items=distinct?groupSolutions(filtered):filtered;
+  const sorted=sortItems(items);
+  const totalTraces=filtered.length;
+
+  // stats
+  document.getElementById('sN').textContent=totalTraces.toLocaleString();
+  document.getElementById('sP').textContent=new Set(filtered.map(r=>r.user_id)).size.toLocaleString();
+  const me=median(filtered.map(r=>r.optimality));
+  const mm=median(filtered.map(r=>r.moves));
+  document.getElementById('sEff').textContent=me==null?'–':me.toFixed(3);
+  document.getElementById('sMov').textContent=mm==null?'–':mm;
+  // mix
+  const counts={snake:0,spiral:0,random_walk:0};
+  filtered.forEach(r=>{ if(counts[r.pattern]!=null) counts[r.pattern]++; });
+  const tot=counts.snake+counts.spiral+counts.random_walk||1;
+  document.getElementById('sMix').innerHTML=
+    ['snake','spiral','random_walk'].map(p=>
+      `<span style="width:${100*counts[p]/tot}%;background:${PAT_COLORS[p]}"></span>`).join('');
+
+  // note + cap
+  const note=document.getElementById('note');
+  const unit=distinct?'distinct solutions':'traces';
+  const head=distinct
+    ? `${sorted.length.toLocaleString()} distinct solutions among ${totalTraces.toLocaleString()} traces`
+    : `${sorted.length.toLocaleString()} traces`;
+  note.textContent = sorted.length>GALLERY_CAP
+    ? `showing top ${GALLERY_CAP} of ${head} (sorted) — narrow the filters to see the rest`
+    : head;
+
+  gallery.innerHTML='';
+  const show=sorted.slice(0,GALLERY_CAP);
+  const frag=document.createDocumentFragment();
+  show.forEach(r=>{
+    const card=document.createElement('div'); card.className='card';
+    const cv=document.createElement('canvas'); cv.width=300; cv.height=300;
+    drawPath(cv.getContext('2d'), r.pts, r.W, r.H, {color:PAT_COLORS[r.pattern], pad:8});
+    const cap=document.createElement('div'); cap.className='cap';
+    if(distinct){
+      const share=(100*r.count/totalTraces).toFixed(1);
+      cap.innerHTML=`<span class="lvl">×${r.count} · ${share}%</span><span class="eff">opt ${r.optimality.toFixed(2)}</span>`;
+    } else {
+      cap.innerHTML=`<span class="lvl">${r.level}</span><span class="eff">opt ${r.optimality.toFixed(2)}</span>`;
+    }
+    const pill=document.createElement('span'); pill.className='pat-pill';
+    pill.textContent=distinct?`${r.level} · ${r.pattern}`:r.pattern;
+    pill.style.color=PAT_COLORS[r.pattern];
+    pill.style.background='rgba(255,255,255,0.05)';
+    card.append(cv,cap,pill);
+    card.onclick=()=>openDetail(r, distinct);
+    frag.append(card);
+  });
+  gallery.append(frag);
+}
+
+// ---- detail / replay ----
+const overlay=document.getElementById('overlay');
+const mCanvas=document.getElementById('mCanvas');
+const mScrub=document.getElementById('mScrub');
+const mPlay=document.getElementById('mPlay');
+let cur=null, playing=false, rafId=null, playStart=0;
+
+function openDetail(r, isGroup){
+  cur=r; playing=false; cancelAnimationFrame(rafId);
+  document.getElementById('mTitle').textContent=`${r.level} · ${r.pattern}`;
+  document.getElementById('mMeta').textContent= isGroup
+    ? `shared solution · done by ${r.count} traces (${r.players?.size??r.count} players) · grid ${r.W}×${r.H}`
+    : `player ${r.user_id} · ${r.platform} · grid ${r.W}×${r.H} · trace ${r.trace_id}`;
+  const kv=[
+    ['optimality',r.optimality.toFixed(3)],['moves',r.moves],
+    ['revisits',r.revisits],['duration',r.duration_s+'s'],
+    ['thinking moves',(r.thinking_moves??0)+' ('+Math.round((r.thinking_frac??0)*100)+'%)'],
+    ['longest pause',((r.longest_pause_ms??0)/1000).toFixed(1)+'s'],
+  ];
+  if(isGroup) kv.unshift(['players',(r.players?.size??r.count)], ['times done',r.count]);
+  document.getElementById('mKv').innerHTML=
+    kv.map(([k,v])=>`<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  document.getElementById('mDemo').innerHTML= isGroup ? '' :
+    ['age','style','gaming','hand','optimization']
+      .map(k=>r[k]?`<span>${k}: ${r[k]}</span>`:'').join('');
+  mScrub.value=1000;
+  drawDetail(r.pts.length);
+  overlay.classList.add('on');
+}
+function drawDetail(upto){
+  drawPath(mCanvas.getContext('2d'), cur.pts, cur.W, cur.H,
+    {color:PAT_COLORS[cur.pattern], upto, pad:14});
+}
+mScrub.oninput=()=>{ playing=false; mPlay.textContent='play';
+  const n=Math.max(1,Math.round(mScrub.value/1000*cur.pts.length)); drawDetail(n); };
+mPlay.onclick=()=>{
+  if(!cur) return;
+  playing=!playing; mPlay.textContent=playing?'pause':'play';
+  if(playing){ const dur=Math.min(6000,Math.max(1500,cur.pts.length*70)); playStart=performance.now();
+    const startFrac=(+mScrub.value>=1000)?0:(+mScrub.value/1000);
+    const step=(t)=>{ if(!playing) return;
+      let frac=startFrac+(t-playStart)/dur; if(frac>=1){frac=1;playing=false;mPlay.textContent='play';}
+      mScrub.value=Math.round(frac*1000);
+      drawDetail(Math.max(1,Math.round(frac*cur.pts.length)));
+      if(playing) rafId=requestAnimationFrame(step);
+    };
+    rafId=requestAnimationFrame(step);
+  } else cancelAnimationFrame(rafId);
+};
+function closeDetail(){ overlay.classList.remove('on'); playing=false; cancelAnimationFrame(rafId); }
+document.getElementById('mClose').onclick=closeDetail;
+overlay.onclick=e=>{ if(e.target===overlay) closeDetail(); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
+
+render();
+
+// ===========================================================================
+// Round maps tab: live pause-rate + visit-flow heatmaps
+// ===========================================================================
+// precompute grid size + run list per level
+const LEVELINFO = {};
+for(const lv of C.levels){
+  const runs = RUNS.filter(r=>r.level===lv);
+  let W=0,H=0; runs.forEach(r=>{ if(r.W>W)W=r.W; if(r.H>H)H=r.H; });
+  LEVELINFO[lv] = {runs, W, H};
+}
+
+// colour ramps as [pos,[r,g,b]] stops — tuned for the dark site background:
+// both run dim -> bright so high values glow and the low floor stays clearly
+// above the panel colour (so empty/obstacle cells read as gaps, not data).
+const FLOW_RAMP=[[0,[60,32,110]],[0.3,[140,42,150]],[0.55,[212,76,112]],[0.8,[247,150,62]],[1,[247,236,92]]];
+const PAUSE_RAMP=[[0,[247,200,60]],[0.3,[124,206,122]],[0.6,[36,150,150]],[1,[42,60,86]]]; // low=yellow -> high=cool
+function rampColor(stops,t){
+  t=Math.max(0,Math.min(1,t));
+  for(let i=1;i<stops.length;i++){ if(t<=stops[i][0]){
+    const a=stops[i-1],b=stops[i],u=(t-a[0])/((b[0]-a[0])||1);
+    const c=k=>Math.round(a[1][k]+(b[1][k]-a[1][k])*u);
+    return `rgb(${c(0)},${c(1)},${c(2)})`;
+  }}
+  const c=stops[stops.length-1][1]; return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function rampGradient(stops){
+  return 'linear-gradient(90deg,'+stops.map(s=>`rgb(${s[1].join(',')}) ${s[0]*100}%`).join(',')+')';
+}
+function drawHeat(cv, W, H, valAt, stops){
+  const ctx=cv.getContext('2d'), cw=cv.width, ch=cv.height, pad=6;
+  ctx.clearRect(0,0,cw,ch);
+  const cell=Math.min((cw-2*pad)/Math.max(W,1),(ch-2*pad)/Math.max(H,1));
+  const ox=(cw-cell*W)/2, oy=(ch-cell*H)/2;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const v=valAt(x,y); if(v==null) continue;
+    ctx.fillStyle=rampColor(stops,v);
+    ctx.fillRect(ox+x*cell+0.5, oy+y*cell+0.5, cell-1, cell-1);
+  }
+}
+const PAUSE_CAP=0.30;
+// accumulate per-cell stats for one level at a given pause threshold
+function computeLevel(lv, thrMs){
+  const {runs,W,H}=LEVELINFO[lv], n=runs.length;
+  const visits={}, pauses={}, touched={}, stepSum={};
+  let totalMoves=0, totalPauses=0;
+  for(const r of runs){
+    const pts=r.pts, last=(pts.length-1)||1, here={};
+    totalMoves += pts.length-1;
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i], k=p.x+','+p.y;
+      visits[k]=(visits[k]||0)+1;
+      if(!(k in here)){ here[k]=i/last; }
+      if(i+1<pts.length){ const dt=pts[i+1].t-pts[i].t;
+        if(dt>=thrMs){ pauses[k]=(pauses[k]||0)+1; totalPauses++; } }
+    }
+    for(const k in here){ touched[k]=(touched[k]||0)+1; stepSum[k]=(stepSum[k]||0)+here[k]; }
+  }
+  return {W,H,n,visits,pauses,touched,stepSum,totalMoves,totalPauses};
+}
+function lawnFn(d){ return (x,y)=>((d.touched[x+','+y]||0)/d.n)>=0.5; }
+function pauseValAt(d){ const lawn=lawnFn(d); return (x,y)=>{ const k=x+','+y;
+  if(!lawn(x,y)||!d.visits[k]) return null; return Math.min((d.pauses[k]||0)/d.visits[k],PAUSE_CAP)/PAUSE_CAP; }; }
+function flowValAt(d){ const lawn=lawnFn(d); return (x,y)=>{ const k=x+','+y;
+  if(!lawn(x,y)||!d.touched[k]) return null; return d.stepSum[k]/d.touched[k]; }; }
+
+function renderMaps(){
+  const lv=document.getElementById('mapRound').value;
+  const thrMs=parseFloat(document.getElementById('thr').value)*1000;
+  document.getElementById('thrVal').textContent=parseFloat(document.getElementById('thr').value).toFixed(1)+' s';
+  const single=document.getElementById('singleMaps'), all=document.getElementById('allMaps');
+  const legend=document.getElementById('allLegend'), metricField=document.getElementById('metricField');
+  // the pause threshold only matters when a pause map is on screen
+  const showPause = (lv!=='all') || (document.getElementById('mapMetric').value==='pause');
+  document.getElementById('thrField').style.display = showPause?'':'none';
+  document.getElementById('thrValField').style.display = showPause?'':'none';
+
+  if(lv==='all'){
+    single.style.display='none'; all.style.display='grid'; legend.style.display='flex'; metricField.style.display='';
+    const metric=document.getElementById('mapMetric').value;       // 'pause' | 'flow'
+    const ramp = metric==='pause'?PAUSE_RAMP:FLOW_RAMP;
+    all.innerHTML=C.levels.map(l=>
+      `<figure><figcaption>${l}</figcaption><canvas id="all_${l}" width="340" height="340"></canvas></figure>`).join('');
+    let totMoves=0, totPauses=0;
+    for(const l of C.levels){
+      const d=computeLevel(l,thrMs);
+      drawHeat(document.getElementById('all_'+l), d.W, d.H,
+               metric==='pause'?pauseValAt(d):flowValAt(d), ramp);
+      totMoves+=d.totalMoves; totPauses+=d.totalPauses;
+    }
+    document.getElementById('allRamp').style.background=rampGradient(ramp);
+    document.getElementById('allLegL').textContent = metric==='pause'?'0%':'start';
+    document.getElementById('allLegR').textContent = metric==='pause'?'≥30%':'end';
+    document.getElementById('mapStat').innerHTML = metric==='pause'
+      ? `all rounds · <b style="color:var(--text)">${(100*totPauses/totMoves).toFixed(1)}%</b> of moves are pauses`
+      : `all rounds · colour = average point in the path when each cell is reached`;
+  } else {
+    all.style.display='none'; legend.style.display='none'; single.style.display='flex'; metricField.style.display='none';
+    const d=computeLevel(lv,thrMs);
+    drawHeat(document.getElementById('heatPause'), d.W, d.H, pauseValAt(d), PAUSE_RAMP);
+    drawHeat(document.getElementById('heatFlow'),  d.W, d.H, flowValAt(d),  FLOW_RAMP);
+    const pct=d.totalMoves? (100*d.totalPauses/d.totalMoves):0;
+    document.getElementById('mapStat').innerHTML=
+      `${d.n.toLocaleString()} traces · <b style="color:var(--text)">${pct.toFixed(1)}%</b> of moves are pauses`;
+    document.getElementById('capPause').textContent='(scale capped at 30%; start corner is off-scale)';
+  }
+}
+// init maps controls
+{
+  const sel=document.getElementById('mapRound');
+  sel.innerHTML='<option value="all">all rounds</option>'+
+    C.levels.map(l=>`<option ${l==='round1'?'selected':''}>${l}</option>`).join('');
+  sel.onchange=renderMaps;
+  document.getElementById('mapMetric').onchange=renderMaps;
+  document.getElementById('thr').oninput=renderMaps;
+  document.getElementById('rampPause').style.background=rampGradient(PAUSE_RAMP);
+  document.getElementById('rampFlow').style.background=rampGradient(FLOW_RAMP);
+}
+
+// ===========================================================================
+// Report tab: embed the static figures
+// ===========================================================================
+const REPORT=[
+  ['q1_pattern_mix_by_round.png','Path-shape mix shifts across rounds'],
+  ['q2_time_vs_moves.png','Time vs moves, by round (Simpson’s paradox)'],
+  ['q3_top_vs_average.png','Top scorers vs everyone else'],
+  ['q4a_optimality_by_demographic.png','Optimality by demographic group'],
+  ['q4b_patterns_by_demographic.png','Path-shape mix by demographic group'],
+  ['q5_optimality_across_rounds.png','Optimality across rounds'],
+  ['q8_think_vs_exec.png','Thinking vs execution (moves & time)'],
+  ['q9_thinking_vs_optimality.png','Does thinking pay off?'],
+  ['q10_score_hist_overall.png','Player-skill distribution (per user)'],
+  ['q11_score_hist_by_round.png','Score distribution by round'],
+  ['q12_metric_distributions.png','Core metric distributions'],
+];
+{
+  const rep=document.getElementById('report');
+  rep.innerHTML=REPORT.map(([f,c])=>
+    `<figure><img loading="lazy" src="figures/${f}" alt="${c}"/><figcaption>${c}</figcaption></figure>`
+  ).join('');
+  // lightbox: click any report figure to view it full-size
+  const lb=document.getElementById('lightbox'), lbImg=document.getElementById('lbImg');
+  const closeLb=()=>lb.classList.remove('on');
+  rep.addEventListener('click',e=>{ const img=e.target.closest('img'); if(!img) return;
+    lbImg.src=img.src; lbImg.alt=img.alt; lb.classList.add('on'); });
+  lb.addEventListener('click',closeLb);
+  document.getElementById('lbClose').onclick=closeLb;
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeLb(); });
+}
+
+// ===========================================================================
+// Tab switching
+// ===========================================================================
+let mapsInit=false;
+document.querySelectorAll('.tabs button').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b===btn));
+    const tab=btn.dataset.tab;
+    document.querySelectorAll('.tabpanel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab));
+    if(tab==='maps' && !mapsInit){ mapsInit=true; renderMaps(); }
+  };
+});
+</script>
+</body>
+</html>
