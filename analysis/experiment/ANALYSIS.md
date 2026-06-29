@@ -18,8 +18,9 @@ build_optimal.py   ->  optimal_paths.csv      exact Concorde optimal path + move
 build_metrics.py   ->  trace_metrics.csv      one row per trace (metrics + demographics)
                        cell_aggregates.csv    per-cell visit-flow + pause stats, per round
                        modal_paths.csv        most common exact path per round (with geometry)
+                       move_waits.csv         one row per move: inter-move wait time (dt)
                        cohort_data.js         window.COHORT for the explorer
-analysis.R         ->  figures/q1..q12*.png   all static figures; summary stats -> console
+analysis.R         ->  figures/q1..q14*.png   all static figures; summary stats -> console
 cohort_explorer.html   open in a browser; reads cohort_data.js
 ```
 
@@ -60,6 +61,10 @@ open cohort_explorer.html   # interactive
 - **thinking move** — a move preceded by a wait ≥ `PAUSE_MS` (1000 ms, set in
   `build_metrics.py`); the rest are fluent **execution** moves. `thinking_frac` is
   the share of such moves; `thinking_time_frac` is their share of total time.
+- **wait time (`dt_ms`)** — the raw pause *before* a move, `t[i] − t[i−1]`. This
+  is the un-aggregated quantity behind the `thinking_*`/`pause_*` summaries;
+  `move_waits.csv` holds one row per move so the full distribution is available
+  for analysis (histogram `q14`). `is_pause` flags `dt_ms ≥ PAUSE_MS`.
 - Tutorial is a *guided* level, so it is excluded from optimality/scoring figures
   (kept only for the pattern-mix and average-path views).
 

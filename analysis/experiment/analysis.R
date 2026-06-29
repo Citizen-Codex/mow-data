@@ -1,10 +1,11 @@
 # Mow-the-Lawn player-behaviour analysis - all static figures in one script.
 #
 # Inputs (from build_metrics.py / build_optimal.py):
-#   trace_metrics.csv     one row per trace (metrics + demographics)
-#   cell_aggregates.csv   per-cell visit-flow + pause stats, per round
-#   modal_paths.csv       most common exact path per round (with geometry)
-#   optimal_paths.csv     the exact Concorde optimal path per round (geometry)
+#   trace_metrics.csv          one row per trace (metrics + demographics + cohort flags)
+#   cell_aggregates.csv        per-cell visit-flow + pause stats, per round
+#   cell_aggregates_by_cohort.csv  same, split by solver cohort (granular Q6/Q7)
+#   modal_paths.csv            most common exact path per round (with geometry)
+#   optimal_paths.csv          the exact Concorde optimal path per round (geometry)
 # Output: figures/*.png  (+ summary stats printed to console)
 #
 # Optimality ("score") = optimal_moves / player_moves  (1.0 = optimal play),
@@ -37,20 +38,35 @@ m <- read_csv("trace_metrics.csv", show_col_types = FALSE) %>%
 # rounds used for optimality / scoring / pauses (exclude guided tutorial)
 scored <- m %>% filter(level != "tutorial", is.finite(optimality))
 
-# completed_all: did this user play *every* non-tutorial round? Per-user stats
-# otherwise mix players who only did the easy early rounds with those who did
-# all of them (only ~38% ever attempt a bonus round). Filtering to this flag
-# gives a consistent pool for analyses where the set of rounds must be held
-# fixed (e.g. Q10's per-user mean optimality, where the easy-round-only players
-# pile up a false spike at optimality 1.0).
+# ---------------------------------------------------------------------------
+# Behavioural cohorts: segment players by *how they played*, an alternative to
+# the self-reported demographics. These are computed once in build_metrics.py
+# (single source of truth) and ride along on every trace as user-level columns;
+# see add_cohorts() there for the exact definitions. In brief:
+#   completed_all - played every non-tutorial round: deeply engaged, deliberate.
+#                   Also the consistent pool (fixed round set) used wherever a
+#                   per-user mean would otherwise be confounded by *which* rounds
+#                   a player attempted - e.g. Q10's false optimality-1.0 spike.
+#   top_solver    - top 10% by mean optimality,    *within completed_all*
+#   worst_solver  - bottom 10% by mean optimality,  *within completed_all*
+#   quick_solver  - fastest 10% by mean solve time, *within completed_all*
+#   slow_solver   - slowest 10% by mean solve time, *within completed_all*
+#   opt_pct/dur_pct - each user's percentile rank in the completed_all pool.
+COHORTS  <- c("completed_all", "top_solver", "worst_solver", "quick_solver", "slow_solver")
+SOLVER_COHORTS <- c("top_solver", "worst_solver", "quick_solver", "slow_solver")  # the 4 tails
+SOLVER_LABELS  <- c("top", "worst", "quick", "slow")  # short facet labels, same order
+COHORT_Q <- 0.10   # tail fraction used to build the cohorts (for Q13 ref lines)
 n_rounds_total <- n_distinct(scored$level)
-scored <- scored %>%
+
+# one row per user with their (constant) cohort flags + percentile ranks
+user_stats <- scored %>%
   group_by(user_id) %>%
-  mutate(completed_all = n_distinct(level) == n_rounds_total) %>%
-  ungroup()
-message(sprintf("completed_all: %d of %d users played all %d rounds",
-                n_distinct(scored$user_id[scored$completed_all]),
-                n_distinct(scored$user_id), n_rounds_total))
+  summarise(across(all_of(c(COHORTS, "opt_pct", "dur_pct")), first), .groups = "drop")
+
+message("cohort sizes:")
+for (cset in COHORTS)
+  message(sprintf("  %-13s %5d of %d users", cset,
+                  sum(user_stats[[cset]], na.rm = TRUE), nrow(user_stats)))
 
 # ===========================================================================
 # Q1. Path-shape mix by round
@@ -215,8 +231,27 @@ save_fig(
     labs(title = "The average path through each round",
          subtitle = "Colour = when, on average, players reach each cell. Following dark->bright traces the typical sweep. White gaps = obstacles.",
          x = NULL, y = NULL) +
-    theme_mow + theme_grid,
+     theme_mow + theme_grid,
   "q6_visit_heatmaps.png", 12, 8)
+
+# Q6 (granular): the average path split by solver cohort - do the best/worst and
+# fastest/slowest players sweep the lawn differently? Rows = round, cols = cohort.
+cells_co <- read_csv("cell_aggregates_by_cohort.csv", show_col_types = FALSE) %>%
+  mutate(level  = factor(level, levels = LEVELS, ordered = TRUE),
+         cohort = factor(cohort, levels = SOLVER_COHORTS, labels = SOLVER_LABELS))
+
+save_fig(
+  ggplot(filter(cells_co, trace_share >= 0.5), aes(x, y, fill = mean_step_frac)) +
+    geom_tile() +
+    facet_wrap(~ level + cohort, scales = "free", ncol = 4) +
+    scale_y_reverse() +
+    scale_fill_viridis_c(option = "plasma", labels = scales::percent,
+                         name = "avg point in\npath (0=start,\n1=end)") +
+    labs(title = "The average path by solver cohort",
+         subtitle = "Rows = round, columns = cohort (top/worst by optimality, quick/slow by time; each ~10% of the completed-all pool).\nColour = when, on average, that cohort reaches each cell. White gaps = obstacles.",
+         x = NULL, y = NULL) +
+    theme_mow + theme_grid + theme(strip.text = element_text(face = "bold", size = 8)),
+  "q6d_visit_heatmaps_by_cohort.png", 13, 18)
 
 modal <- read_csv("modal_paths.csv", show_col_types = FALSE) %>%
   mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
@@ -288,17 +323,33 @@ save_fig(
     labs(title = "Where players stop to think",
          subtitle = "Per cell: share of visits followed by a >=1s pause. The start corner (>=90%, off-scale) is the big planning moment; dead-ends and turns light up next.",
          x = NULL, y = NULL) +
-    theme_mow + theme_grid,
+     theme_mow + theme_grid,
   "q7_pause_heatmaps.png", 12, 8)
 
+# Q7 (granular): pause-rate heatmap split by solver cohort - do the slow/worst
+# solvers hesitate across more of the lawn than the quick/top solvers?
+save_fig(
+  ggplot(filter(cells_co, is.finite(pause_rate)), aes(x, y, fill = pause_rate)) +
+    geom_tile() +
+    facet_wrap(~ level + cohort, scales = "free", ncol = 4) +
+    scale_y_reverse() +
+    scale_fill_viridis_c(option = "mako", direction = -1, labels = scales::percent,
+                         limits = c(0, 0.3), oob = scales::squish,
+                         name = "chance a visit\ntriggers a pause\n(capped at 30%)") +
+    labs(title = "Where each solver cohort stops to think",
+         subtitle = "Rows = round, columns = cohort. Per cell: share of visits followed by a >=1s pause (capped at 30%; the start corner is off-scale).",
+         x = NULL, y = NULL) +
+    theme_mow + theme_grid + theme(strip.text = element_text(face = "bold", size = 8)),
+  "q7b_pause_heatmaps_by_cohort.png", 13, 18)
+
 # ===========================================================================
-# Q8. Thinking vs execution: top scorers (top 5% optimality, per round) vs rest.
+# Q8. Thinking vs execution: the top-solver cohort vs everyone else.
+#     Top solvers = top 10% by mean optimality among completed-all players
+#     (the top_solver cohort), not a per-round per-trace cut.
 #     Rows = share of MOVES / share of TIME; columns = the two groups.
 # ===========================================================================
 split <- scored %>%
-  group_by(level) %>%
-  mutate(grp = if_else(optimality >= quantile(optimality, 0.95, na.rm = TRUE),
-                       "Top 5%", "Everyone else")) %>%
+  mutate(grp = if_else(top_solver, "Top solvers", "Everyone else")) %>%
   group_by(level, grp) %>%
   summarise(`moves: thinking`  = sum(thinking_moves) / sum(moves),
             `moves: execution` = 1 - sum(thinking_moves) / sum(moves),
@@ -309,7 +360,7 @@ split <- scored %>%
   separate(kv, c("facet", "kind"), sep = ": ") %>%
   mutate(kind = factor(kind, levels = c("execution", "thinking")),
          facet = recode(facet, moves = "share of MOVES", time = "share of TIME"),
-         grp = factor(grp, levels = c("Top 5%", "Everyone else")))
+         grp = factor(grp, levels = c("Top solvers", "Everyone else")))
 
 save_fig(
   ggplot(split, aes(level, share, fill = kind)) +
@@ -319,12 +370,12 @@ save_fig(
     facet_grid(facet ~ grp) +
     scale_fill_manual(values = c(execution = "#5b8cff", thinking = "#f5b841")) +
     scale_y_continuous(labels = scales::percent) +
-    labs(title = "Thinking vs execution: top scorers vs everyone else",
-         subtitle = "Top 5% = highest optimality within each round. A \"thinking\" move is one preceded by a wait of >=1 second.\nShare of MOVES = fraction of all moves that were thinking vs fluent. Share of TIME = fraction of total time spent in each.",
+    labs(title = "Thinking vs execution: top solvers vs everyone else",
+         subtitle = "Top solvers = the top_solver cohort (top 10% by mean optimality, completed-all players).\nA \"thinking\" move is one preceded by a wait of >=1 second.\nShare of MOVES = thinking vs fluent moves; share of TIME = total time spent in each.",
          x = NULL, y = NULL, fill = NULL) +
     theme_mow + theme(axis.text.x = element_text(angle = 20, hjust = 1, size = 8),
                       strip.text.y = element_text(angle = -90)),
-  "q8_think_vs_exec.png", 10, 7)
+  "q8_think_vs_exec.png", 11, 7.5)
 
 # ===========================================================================
 # Q9. Does thinking pay off?
@@ -404,6 +455,91 @@ save_fig(
          x = NULL, y = NULL) +
     theme_mow + theme(axis.text.x = element_text(angle = 20, hjust = 1, size = 9)),
   "q12_metric_distributions.png", 11, 7)
+
+# ===========================================================================
+# Q13. Cohort map: every completed-all player placed by their optimality and
+#      time percentiles (ranked within the pool). Dashed lines mark the COHORT_Q
+#      tails that define the solver cohorts; a player can sit in an optimality
+#      tail (top/worst, vertical bands) and a speed tail (quick/slow, horizontal
+#      bands) at once - the corners are those overlaps.
+# ===========================================================================
+q13 <- user_stats %>%
+  filter(completed_all, is.finite(opt_pct), is.finite(dur_pct)) %>%
+  mutate(cohort = factor(case_when(top_solver   ~ "top",
+                                   worst_solver ~ "worst",
+                                   quick_solver ~ "quick",
+                                   slow_solver  ~ "slow",
+                                   TRUE         ~ "core"),
+                         levels = c("top", "worst", "quick", "slow", "core")))
+q13_rho <- cor(q13$dur_pct, q13$opt_pct, method = "spearman")
+
+save_fig(
+  ggplot(q13, aes(dur_pct, opt_pct)) +
+    geom_hline(yintercept = c(COHORT_Q, 1 - COHORT_Q), linetype = "dashed", color = "grey75") +
+    geom_vline(xintercept = c(COHORT_Q, 1 - COHORT_Q), linetype = "dashed", color = "grey75") +
+    geom_point(aes(color = cohort), alpha = 0.55, size = 1.4) +
+    geom_smooth(method = "lm", se = FALSE, color = "grey20", linewidth = 0.7) +
+    scale_color_manual(values = c(top = "#3ddc97", worst = "#ff5c8a",
+                                  quick = "#5b8cff", slow = "#f5b841", core = "grey80")) +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    coord_equal() +
+    labs(title = "Cohort map: optimality vs time percentile (completed-all players)",
+         subtitle = sprintf("One dot per player, ranked within the %s who finished every round.\nDashed lines = the %d%% cohort tails (top/worst by optimality, quick/slow by time).\nSlower players score modestly higher (Spearman rho = %.2f) \u2014 the top tier deliberates.",
+                            scales::comma(nrow(q13)), round(COHORT_Q * 100), q13_rho),
+         x = "duration percentile (slower \u2192)", y = "optimality percentile (better \u2191)",
+         color = "cohort") +
+    theme_mow,
+  "q13_cohort_percentile_map.png", 11, 8)
+
+# ===========================================================================
+# Q14. Distribution of per-move wait times (ALL moves)
+#   move_waits.csv is long-format: one row per move, dt_ms = wait before it
+#   (t[i]-t[i-1]). This is the raw quantity behind the trace-level thinking_*
+#   and cell-level pause_* summaries, exported un-aggregated so the full
+#   wait-time distribution is visible. Waits span ms to multi-minute idle
+#   pauses, so plot on a log10 axis; the dashed line is PAUSE_MS, the 1s
+#   threshold that splits "thinking" from fluent "execution".
+# ===========================================================================
+PAUSE_MS <- 1000
+waits <- read_csv("move_waits.csv", show_col_types = FALSE) %>%
+  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
+# log axis needs dt > 0 (a few moves share a timestamp -> dt = 0)
+wait_pos <- waits %>% filter(dt_ms > 0)
+message(sprintf("Q14: %d moves total, %d with dt>0 (%d zero-wait dropped from log plot)",
+                nrow(waits), nrow(wait_pos), nrow(waits) - nrow(wait_pos)))
+
+save_fig(
+  ggplot(wait_pos, aes(dt_ms)) +
+    geom_histogram(aes(fill = dt_ms >= PAUSE_MS), bins = 60,
+                   color = "white", linewidth = 0.1) +
+    geom_vline(xintercept = PAUSE_MS, linetype = "dashed", color = "grey20") +
+    annotate("text", x = PAUSE_MS, y = Inf, label = "  1s thinking threshold",
+             hjust = 0, vjust = 1.6, family = "mono", size = 3.4, color = "grey25") +
+    scale_x_log10(labels = scales::comma) +
+    scale_fill_manual(values = c(`FALSE` = "#5b8cff", `TRUE` = "#f5b841"),
+                      labels = c("execution (<1s)", "thinking (>=1s)"), name = NULL) +
+    labs(title = "Distribution of per-move wait times (all moves)",
+         subtitle = sprintf("One observation per move = the wait before it (dt = t[i]-t[i-1]). %s moves across %s traces.\nLog time axis; dashed line marks the 1s threshold splitting fluent execution from deliberate thinking.",
+                            scales::comma(nrow(wait_pos)), scales::comma(n_distinct(waits$trace_id))),
+         x = "wait before move (ms, log scale)", y = "moves") +
+    theme_mow,
+  "q14_move_wait_histogram.png", 10, 6)
+
+# Same distribution split per round (waits get longer / heavier-tailed on big grids)
+save_fig(
+  ggplot(wait_pos, aes(dt_ms)) +
+    geom_histogram(aes(fill = level), bins = 50, color = "white",
+                   linewidth = 0.1, show.legend = FALSE) +
+    geom_vline(xintercept = PAUSE_MS, linetype = "dashed", color = "grey20") +
+    facet_wrap(~level, scales = "free_y", ncol = 2) +
+    scale_x_log10(labels = scales::comma) +
+    scale_fill_brewer(palette = "Set2") +
+    labs(title = "Per-move wait-time distribution by round",
+         subtitle = "Dashed line = 1s thinking threshold. Log time axis; y free per round.",
+         x = "wait before move (ms, log scale)", y = "moves") +
+    theme_mow,
+  "q14b_move_wait_histogram_by_round.png", 10, 7)
 
 # ===========================================================================
 # Summary stats -> console

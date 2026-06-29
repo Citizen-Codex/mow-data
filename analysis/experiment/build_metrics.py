@@ -5,6 +5,9 @@ derives per-trace metrics, labels each path's shape with the existing path
 classifier, joins demographics, and writes:
 
   - trace_metrics.csv   one row per trace, ready for static analysis / ggplot
+  - cell_aggregates.csv per-cell visit-flow + pause stats, per round
+  - modal_paths.csv     most common exact path per round (with geometry)
+  - move_waits.csv      one row per move (inter-move wait time) for distributions
   - cohort_data.js      window.COHORT = {...} for the interactive cohort explorer
 
 Optimality is measured against the provably-optimal covering walk for each
@@ -37,12 +40,19 @@ LABELLED_CSV = REPO / "data" / "labelled_paths.csv"
 OUT_METRICS = HERE / "trace_metrics.csv"
 OUT_COHORT = HERE / "cohort_data.js"
 OUT_CELLS = HERE / "cell_aggregates.csv"   # per-cell visit-flow + pause stats
+OUT_CELLS_COHORT = HERE / "cell_aggregates_by_cohort.csv"  # same, split by cohort
 OUT_MODAL = HERE / "modal_paths.csv"
+OUT_WAITS = HERE / "move_waits.csv"        # long-format per-move wait times
 
 # Logical round ordering (difficulty / grid size grows along this axis).
 LEVEL_ORDER = ["tutorial", "round1", "round2", "bonus1", "bonus2", "bonus3"]
 
 DEMO_COLS = ["age", "style", "gaming", "hand", "optimization"]
+
+# Behavioural cohorts: tail fraction + the four solver cohorts (top/worst by
+# optimality, quick/slow by solve time). See add_cohorts() for the definitions.
+COHORT_Q = 0.10
+COHORT_FLAGS = ["top_solver", "worst_solver", "quick_solver", "slow_solver"]
 
 # A move that took longer than this (ms) to make is a deliberate "thinking"
 # move; faster ones are fluent "execution". Matches the 1000ms reference line
@@ -110,9 +120,73 @@ def trace_metrics(pts: list[dict]) -> dict:
     }
 
 
+def _level_cell_rows(g: pd.DataFrame, level: str) -> list[dict]:
+    """Per-cell visit-flow + pause stats for one level over the given traces.
+
+    Factored out so it can run over all traces (the overall heatmap) or over a
+    cohort subset (the granular per-cohort heatmaps) with identical maths.
+    """
+    from collections import defaultdict
+
+    n_traces = len(g)
+    gw = int(g["bbox_w"].max())    # grid extent for this level (max over traces)
+    gh = int(g["bbox_h"].max())
+    visits = defaultdict(int)      # (x,y) -> total times stepped on
+    touched = defaultdict(int)     # (x,y) -> number of traces that touched it
+    step_sum = defaultdict(float)  # (x,y) -> sum of normalised step position (0..1)
+    pause_at = defaultdict(int)    # (x,y) -> # thinking-pauses that happened here
+    pause_ms_at = defaultdict(float)  # (x,y) -> total ms paused here
+
+    for pts in g["pts"]:
+        cells_here = {}
+        last = len(pts) - 1 or 1
+        for i, p in enumerate(pts):
+            c = (p["x"], p["y"])
+            visits[c] += 1
+            # first time this trace reaches the cell defines its arrival order
+            if c not in cells_here:
+                cells_here[c] = i / last
+            # a pause is the wait *before* the next move, i.e. while sitting at c
+            if i + 1 < len(pts):
+                dt = pts[i + 1]["t"] - p["t"]
+                if dt >= PAUSE_MS:
+                    pause_at[c] += 1
+                    pause_ms_at[c] += dt
+        for c, frac in cells_here.items():
+            touched[c] += 1
+            step_sum[c] += frac
+
+    rows = []
+    for (x, y) in sorted(set(visits) | set(touched)):
+        t = touched[(x, y)]
+        v = visits[(x, y)]
+        pa = pause_at[(x, y)]
+        rows.append(
+            {
+                "level": level,
+                "x": x,
+                "y": y,
+                "grid_w": gw,
+                "grid_h": gh,
+                "visits": v,
+                "traces_touching": t,
+                "trace_share": round(t / n_traces, 4),
+                # avg point in the path (0=start,1=end) when the cell is first reached
+                "mean_step_frac": round(step_sum[(x, y)] / t, 4) if t else float("nan"),
+                "pauses": pa,
+                "pauses_per_trace": round(pa / n_traces, 4),
+                # probability that landing on this cell triggers a think
+                "pause_rate": round(pa / v, 4) if v else float("nan"),
+                "mean_pause_ms": round(pause_ms_at[(x, y)] / pa, 1) if pa else 0.0,
+            }
+        )
+    return rows
+
+
 def write_aggregates(df: pd.DataFrame) -> None:
-    """Per-level cell-visit heatmap + the single most common exact path."""
-    from collections import Counter, defaultdict
+    """Per-level cell-visit heatmap + most common exact path, plus the same
+    per-cell aggregates split by behavioural cohort (granular Q6/Q7 heatmaps)."""
+    from collections import Counter
 
     cell_rows = []
     modal_rows = []
@@ -120,66 +194,19 @@ def write_aggregates(df: pd.DataFrame) -> None:
         g = df[df["level"] == level]
         if g.empty:
             continue
+        cell_rows.extend(_level_cell_rows(g, level))
+
+        # most common exact path (overall only)
         n_traces = len(g)
-        # grid extent for this level (max over traces)
         gw = int(g["bbox_w"].max())
         gh = int(g["bbox_h"].max())
-
-        visits = defaultdict(int)      # (x,y) -> total times stepped on
-        touched = defaultdict(int)     # (x,y) -> number of traces that touched it
-        step_sum = defaultdict(float)  # (x,y) -> sum of normalised step position (0..1)
-        pause_at = defaultdict(int)    # (x,y) -> # thinking-pauses that happened here
-        pause_ms_at = defaultdict(float)  # (x,y) -> total ms paused here
         sig_counter: Counter = Counter()   # exact move-signature -> count
         sig_example: dict[str, list] = {}  # signature -> representative pts
-
         for pts in g["pts"]:
-            cells_here = {}
-            last = len(pts) - 1 or 1
-            for i, p in enumerate(pts):
-                c = (p["x"], p["y"])
-                visits[c] += 1
-                # first time this trace reaches the cell defines its arrival order
-                if c not in cells_here:
-                    cells_here[c] = i / last
-                # a pause is the wait *before* the next move, i.e. while sitting at c
-                if i + 1 < len(pts):
-                    dt = pts[i + 1]["t"] - p["t"]
-                    if dt >= PAUSE_MS:
-                        pause_at[c] += 1
-                        pause_ms_at[c] += dt
-            for c, frac in cells_here.items():
-                touched[c] += 1
-                step_sum[c] += frac
             sig = points_to_moves(pts)
             sig_counter[sig] += 1
             if sig not in sig_example:
                 sig_example[sig] = pts
-
-        for (x, y) in sorted(set(visits) | set(touched)):
-            t = touched[(x, y)]
-            v = visits[(x, y)]
-            pa = pause_at[(x, y)]
-            cell_rows.append(
-                {
-                    "level": level,
-                    "x": x,
-                    "y": y,
-                    "grid_w": gw,
-                    "grid_h": gh,
-                    "visits": v,
-                    "traces_touching": t,
-                    "trace_share": round(t / n_traces, 4),
-                    # avg point in the path (0=start,1=end) when the cell is first reached
-                    "mean_step_frac": round(step_sum[(x, y)] / t, 4) if t else float("nan"),
-                    "pauses": pa,
-                    "pauses_per_trace": round(pa / n_traces, 4),
-                    # probability that landing on this cell triggers a think
-                    "pause_rate": round(pa / v, 4) if v else float("nan"),
-                    "mean_pause_ms": round(pause_ms_at[(x, y)] / pa, 1) if pa else 0.0,
-                }
-            )
-
         sig, count = sig_counter.most_common(1)[0]
         modal_rows.append(
             {
@@ -207,6 +234,119 @@ def write_aggregates(df: pd.DataFrame) -> None:
         md[["level", "n_traces", "distinct_paths", "modal_count", "modal_share"]]
         .to_string(index=False)
     )
+
+    # --- per-cohort cell aggregates: one block per solver cohort, per level ---
+    cohort_rows = []
+    for cohort in COHORT_FLAGS:
+        sub = df[df[cohort]]
+        for level in LEVEL_ORDER:
+            g = sub[sub["level"] == level]
+            if g.empty:
+                continue
+            for r in _level_cell_rows(g, level):
+                r["cohort"] = cohort
+                cohort_rows.append(r)
+    pd.DataFrame(cohort_rows).to_csv(OUT_CELLS_COHORT, index=False)
+    print(f"Wrote {OUT_CELLS_COHORT}  ({len(cohort_rows)} cells across {len(COHORT_FLAGS)} cohorts)")
+
+
+def write_move_waits(df: pd.DataFrame) -> None:
+    """Long-format per-move wait times: one row per move, for distribution analysis.
+
+    The wait time is dt = t[i] - t[i-1], the pause *before* move i -- the same
+    raw quantity that is otherwise only summarised per-trace (thinking_*) or
+    per-cell (pause_*). Emitting it un-aggregated lets R plot the full wait-time
+    histogram across all moves and re-cut the thinking/execution threshold
+    freely. Tutorial moves are kept; the consumer can filter by level.
+
+    Columns: trace_id, user_id, level, move_index (1-based), move (u/d/l/r),
+    dt_ms (wait before the move), is_pause (dt_ms >= PAUSE_MS).
+    """
+    rows = []
+    for tid, uid, level, pts in zip(
+        df["trace_id"], df["user_id"], df["level"], df["pts"]
+    ):
+        for i in range(1, len(pts)):
+            dt = pts[i]["t"] - pts[i - 1]["t"]
+            rows.append(
+                {
+                    "trace_id": tid,
+                    "user_id": uid,
+                    "level": level,
+                    "move_index": i,
+                    "move": points_to_moves(pts[i - 1 : i + 1]),
+                    "dt_ms": dt,
+                    "is_pause": dt >= PAUSE_MS,
+                }
+            )
+    pd.DataFrame(rows).to_csv(OUT_WAITS, index=False)
+    print(f"Wrote {OUT_WAITS}  ({len(rows)} moves)")
+
+
+def add_cohorts(df: pd.DataFrame) -> pd.DataFrame:
+    """Segment players by *how they played* (an alternative to demographics) and
+    attach the user-level flags to every trace. Single source of truth, also
+    consumed by analysis.R via trace_metrics.csv.
+
+      completed_all     - played every non-tutorial round (deeply engaged)
+      top/worst_solver  - top/bottom COHORT_Q by mean optimality, in completed_all
+      quick/slow_solver - fastest/slowest COHORT_Q by mean solve time, in completed_all
+
+    All tails are taken *inside* completed_all so the set of rounds being averaged
+    is held fixed; otherwise easy-round-only players dominate (their mean
+    optimality piles up at 1.0 and their short easy rounds look "quick"). Also
+    emits opt_pct / dur_pct: each user's percentile rank within the completed_all
+    pool (fraction at or below; NA for non-pool users).
+    """
+    import numpy as np
+
+    nontut = df[(df["level"] != "tutorial") & df["optimality"].notna()]
+    n_rounds_total = nontut["level"].nunique()
+
+    u = nontut.groupby("user_id").agg(
+        n_levels=("level", "nunique"),
+        mean_opt=("optimality", "mean"),
+    )
+    pos = nontut[nontut["duration_s"] > 0]
+    u["mean_dur"] = pos.groupby("user_id")["duration_s"].mean()
+    u["completed_all"] = u["n_levels"] == n_rounds_total
+
+    ca = u[u["completed_all"]]
+    opt_hi = ca["mean_opt"].quantile(1 - COHORT_Q)
+    opt_lo = ca["mean_opt"].quantile(COHORT_Q)
+    ca_dur = ca["mean_dur"].dropna()
+    dur_lo = ca_dur.quantile(COHORT_Q)
+    dur_hi = ca_dur.quantile(1 - COHORT_Q)
+
+    # percentile rank within the completed-all pool (fraction at or below); NA else
+    opt_sorted = np.sort(ca["mean_opt"].to_numpy())
+    dur_sorted = np.sort(ca_dur.to_numpy())
+    pool = u["completed_all"].to_numpy()
+    dpool = pool & u["mean_dur"].notna().to_numpy()
+    u["opt_pct"] = np.nan
+    u.loc[pool, "opt_pct"] = (
+        np.searchsorted(opt_sorted, u.loc[pool, "mean_opt"].to_numpy(), side="right")
+        / len(opt_sorted)
+    ).round(4)
+    u["dur_pct"] = np.nan
+    u.loc[dpool, "dur_pct"] = (
+        np.searchsorted(dur_sorted, u.loc[dpool, "mean_dur"].to_numpy(), side="right")
+        / len(dur_sorted)
+    ).round(4)
+
+    u["top_solver"] = u["completed_all"] & (u["mean_opt"] >= opt_hi)
+    u["worst_solver"] = u["completed_all"] & (u["mean_opt"] <= opt_lo)
+    u["quick_solver"] = u["completed_all"] & u["mean_dur"].notna() & (u["mean_dur"] <= dur_lo)
+    u["slow_solver"] = u["completed_all"] & u["mean_dur"].notna() & (u["mean_dur"] >= dur_hi)
+
+    cols = ["completed_all", "opt_pct", "dur_pct", *COHORT_FLAGS]
+    out = df.merge(u[cols], left_on="user_id", right_index=True, how="left")
+    for c in ["completed_all", *COHORT_FLAGS]:
+        out[c] = out[c].fillna(False).astype(bool)
+
+    sizes = {c: int(u[c].sum()) for c in ["completed_all", *COHORT_FLAGS]}
+    print(f"  cohorts (COHORT_Q={COHORT_Q}, {n_rounds_total} rounds, n_users={len(u)}): {sizes}")
+    return out
 
 
 def main() -> None:
@@ -282,6 +422,10 @@ def main() -> None:
     # ordered categorical for nice plotting
     df["level"] = pd.Categorical(df["level"], categories=LEVEL_ORDER, ordered=True)
 
+    # --- behavioural cohorts (single source of truth; consumed by analysis.R) ---
+    print("  computing behavioural cohorts ...")
+    df = add_cohorts(df)
+
     # --- write tidy CSV (no pts / probs columns) ---
     csv_df = df.drop(columns=["pts"])
     csv_df.to_csv(OUT_METRICS, index=False)
@@ -289,6 +433,9 @@ def main() -> None:
 
     # --- per-level heatmap + most common path aggregates ---
     write_aggregates(df)
+
+    # --- long-format per-move wait times (histogram / distribution analysis) ---
+    write_move_waits(df)
 
     # --- write cohort data for the interactive explorer ---
     # group runs under each user, attach demographics + computed pattern/metrics
