@@ -90,7 +90,22 @@ open cohort_explorer.html   # interactive
    deliberation beats speed.
 4. **Demographics:** clear age gradient (younger more efficient; 60+ lowest);
    self-described "I follow a set pattern" players are slightly more efficient;
-   regular gamers marginally better; handedness shows no effect.
+   regular gamers marginally better; handedness shows no effect. Tested per
+   demographic with a Kruskal-Wallis test on one value per user (mean optimality,
+   `completed_all` pool so the round set is fixed; non-parametric because
+   optimality is bounded/left-skewed). Age dominates (ε² ≈ 0.10, p ≈ 5e-62),
+   gaming is moderate (ε² ≈ 0.06), style (ε² ≈ 0.03) and optimization (ε² ≈ 0.01)
+   are significant but tiny, and handedness is **not** significant (p ≈ 0.35).
+   With ~2.8k users almost any gap clears p < 0.001, so the ε² effect sizes —
+   not the p-values — carry the story (`q4a`). A single OLS regression of per-user
+   mean optimality on **all five demographics at once** (`q4c`, complete-case
+   n ≈ 2,792, R² ≈ 0.17) gives the cleaner joint read: net of the others, age,
+   planning style, and gaming stay significant (drop1 F-tests all p < 1e-12), but
+   **handedness (p ≈ 0.20) and "optimization" (p ≈ 0.89) are not** — the univariate
+   optimization effect was confounded (regular gamers / younger players also report
+   optimizing more). Largest gaps vs baseline: regular gamers +0.024, "rough
+   approach / adapt" +0.018 and ages 30-44 +0.016; ages 60+ −0.028 and Under 18
+   −0.022.
 5. **Optimality declines as grids get harder, then partly recovers — it never
    improves with practice.** Against the true Concorde baseline, median
    optimality falls from round1 (1.00) → round2 (0.923) → bonus1 (0.905, the

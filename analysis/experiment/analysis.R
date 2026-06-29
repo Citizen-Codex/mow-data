@@ -272,20 +272,134 @@ save_fig(
   "q3_top_vs_average.png", 9, 8)
 
 # ===========================================================================
-# Q4. Optimality by demographic group
+# Q4. Optimality by demographic group (+ significance test)
 # ===========================================================================
 eff_demo <- scored %>%
   pivot_longer(all_of(DEMOS), names_to = "demo", values_to = "group") %>% filter(!is.na(group))
+
+# Significance test: do the groups within a demographic differ in optimality?
+# Test ONE value per user (mean optimality) - traces from the same user aren't
+# independent, so a per-trace test would be pseudoreplicated. Restrict to
+# completed_all so the round set is held fixed across users; otherwise a group
+# that quits after the easy early rounds averages toward 1.0 and the difference
+# is round-mix, not skill (the Q10 confound). Optimality is bounded and
+# left-skewed, so use Kruskal-Wallis (non-parametric) rather than ANOVA.
+# eps2 = H/(n-1) is the effect size: with thousands of users almost any gap is
+# "significant", so eps2 (small ~0.01, medium ~0.06, large ~0.14) carries the
+# magnitude that the p-value alone does not.
+q4_user <- scored %>%
+  filter(completed_all) %>%
+  group_by(user_id) %>%
+  summarise(mean_opt = mean(optimality), across(all_of(DEMOS), first), .groups = "drop")
+
+q4_tests <- map_dfr(DEMOS, function(d) {
+  dd <- q4_user %>% transmute(group = .data[[d]], mean_opt) %>% filter(!is.na(group))
+  kt <- kruskal.test(mean_opt ~ group, data = dd)
+  tibble(demo = d, n = nrow(dd), k = n_distinct(dd$group),
+         H = unname(kt$statistic), df = unname(kt$parameter),
+         p = kt$p.value, eps2 = unname(kt$statistic) / (nrow(dd) - 1))
+})
+message("\nQ4 Kruskal-Wallis on per-user mean optimality (completed_all pool):")
+print(q4_tests %>% mutate(H = round(H, 2), eps2 = round(eps2, 4), p = signif(p, 3)))
+
+q4_lab <- q4_tests %>%
+  mutate(lab = sprintf("Kruskal-Wallis  p %s\n\u03b5\u00b2 = %.3f  (n = %s users)",
+                       if_else(p < 1e-3, "< 0.001", sprintf("= %.3f", p)),
+                       eps2, scales::comma(n)))
+
 save_fig(
   ggplot(eff_demo, aes(group, optimality)) +
     geom_boxplot(fill = "#5b8cff", alpha = 0.5, outlier.alpha = 0.08, linewidth = 0.4) +
+    geom_label(data = q4_lab, aes(x = -Inf, y = -Inf, label = lab), inherit.aes = FALSE,
+               hjust = 0, vjust = 0, family = "mono", size = 2.6, color = "grey20",
+               fill = alpha("white", 0.7), label.size = 0, lineheight = 0.95) +
     facet_wrap(~demo, scales = "free_x", ncol = 2) +
     coord_cartesian(ylim = c(0.6, 1)) +
     labs(title = "Optimality by demographic group",
-         subtitle = "optimality = optimal moves / player moves;  1.0 = the Concorde optimum",
+         subtitle = "optimality = optimal moves / player moves (1.0 = the Concorde optimum). Boxes show the per-trace distribution.\nKruskal-Wallis tests one value per user (mean optimality over completed-all players, so the round set is fixed);\n\u03b5\u00b2 is the effect size (H/(n-1)). With thousands of users tiny gaps reach significance - read \u03b5\u00b2 for the real magnitude.",
          x = NULL, y = "optimality") +
     theme_mow + theme(axis.text.x = element_text(angle = 25, hjust = 1, size = 8)),
   "q4a_optimality_by_demographic.png", 11, 8)
+
+# ===========================================================================
+# Q4c. One regression with ALL demographics at once.
+#      The Kruskal-Wallis tests above are univariate (one demographic at a
+#      time), so a real effect in one can leak into another whenever they're
+#      correlated (e.g. younger players game more - is the "gaming" gap just
+#      age?). A single linear model of per-user mean optimality on all five
+#      demographics estimates each effect while holding the others fixed, and
+#      its coefficients read off directly as optimality-point gaps vs a chosen
+#      reference level - a simpler, all-in-one summary than five separate tests.
+#      Same response as the test above: one value per user, completed_all pool
+#      (independent observations, round set fixed). OLS on the per-user mean is
+#      fine for interpretation at this n; coefficients are differences in
+#      optimality, 95% CI from the t distribution.
+# ===========================================================================
+q4_reg <- q4_user %>%
+  drop_na(all_of(DEMOS)) %>%                       # complete cases for one joint model
+  mutate(age          = relevel(factor(age),          ref = "18-29"),
+         style        = relevel(factor(style),        ref = "I just start and figure it out"),
+         gaming       = relevel(factor(gaming),       ref = "Rarely or never"),
+         hand         = relevel(factor(hand),         ref = "Right"),
+         optimization = relevel(factor(optimization), ref = "Rarely or never"))
+
+fit <- lm(mean_opt ~ age + style + gaming + hand + optimization, data = q4_reg)
+sm  <- summary(fit)
+message(sprintf("\nQ4c regression: mean optimality ~ all demographics (complete-case n = %d, R^2 = %.3f, adj = %.3f)",
+                nrow(q4_reg), sm$r.squared, sm$adj.r.squared))
+print(round(sm$coefficients, 4))
+message("\nQ4c term significance (drop1 F-test: each demographic net of all the others):")
+print(drop1(fit, test = "F"))
+
+ci <- confint(fit)
+coef_tbl <- tibble(term     = rownames(sm$coefficients),
+                   estimate = sm$coefficients[, "Estimate"],
+                   se       = sm$coefficients[, "Std. Error"],
+                   p        = sm$coefficients[, "Pr(>|t|)"],
+                   lo       = ci[, 1], hi = ci[, 2]) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(demo  = DEMOS[map_int(term, ~ which(startsWith(.x, DEMOS))[1])],
+         level = str_remove(term, paste0("^", demo)),
+         sig   = p < 0.05)
+
+# reference rows (gap = 0 by definition) so each facet shows its baseline
+ref_tbl <- tibble(demo  = DEMOS,
+                  level = c("18-29", "I just start and figure it out",
+                            "Rarely or never", "Right", "Rarely or never"),
+                  estimate = 0)
+# natural within-demographic ordering (ordinal where it applies)
+ord <- unique(c("Under 18", "18-29", "30-44", "45-59", "60+",
+                "I just start and figure it out", "I have a rough approach but adapt as I go",
+                "I follow a set pattern", "I've never done either",
+                "Rarely or never", "Sometimes", "Regularly",
+                "Right", "Left", "Ambidextrous"))
+plot_tbl <- bind_rows(mutate(coef_tbl, ref = FALSE), mutate(ref_tbl, ref = TRUE)) %>%
+  mutate(level = factor(level, levels = rev(ord)),
+         demo  = factor(demo, levels = DEMOS))
+xr <- max(abs(c(coef_tbl$lo, coef_tbl$hi)), na.rm = TRUE)
+
+save_fig(
+  ggplot(plot_tbl, aes(estimate, level)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
+    geom_pointrange(data = filter(plot_tbl, !ref),
+                    aes(xmin = lo, xmax = hi, color = sig), fatten = 2.2) +
+    geom_point(data = filter(plot_tbl, ref), shape = 21, fill = "white",
+               color = "grey45", size = 2.4, stroke = 0.6) +
+    facet_grid(demo ~ ., scales = "free_y", space = "free_y", switch = "y") +
+    scale_color_manual(values = c(`TRUE` = "#ff5c8a", `FALSE` = "grey60"),
+                       labels = c(`TRUE` = "p < 0.05", `FALSE` = "not significant"),
+                       name = NULL, na.translate = FALSE) +
+    coord_cartesian(xlim = c(-xr, xr)) +
+    labs(title = sprintf("Optimality regression: all demographics together (R\u00b2 = %.3f, adj %.3f)",
+                         sm$r.squared, sm$adj.r.squared),
+         subtitle = sprintf("OLS of per-user mean optimality on all five demographics at once (completed-all pool, complete-case n = %s).\nPoint = that level's gap vs its reference (hollow point at 0); bars = 95%% CI; pink = p < 0.05.\nEvery effect is net of the others - unlike the one-at-a-time Kruskal-Wallis tests.",
+                            scales::comma(nrow(q4_reg))),
+         x = "optimality difference vs reference level", y = NULL) +
+    theme_mow + theme(strip.placement = "outside",
+                      strip.text.y.left = element_text(angle = 0, face = "bold", size = 8),
+                      panel.spacing = unit(4, "pt"),
+                      legend.position = "top"),
+  "q4c_optimality_regression.png", 12, 8)
 
 # ===========================================================================
 # Q5. Did optimality improve between rounds?
@@ -452,39 +566,50 @@ save_fig(
   "q7b_pause_heatmaps_by_cohort.png", 13, 18)
 
 # ===========================================================================
-# Q8. Thinking vs execution: the top-solver cohort vs everyone else.
-#     Top solvers = top 10% by mean optimality among completed-all players
-#     (the top_solver cohort), not a per-round per-trace cut.
-#     Rows = share of MOVES / share of TIME; columns = the two groups.
+# Q8. Thinking vs execution, by solver cohort.
+#     Each solver cohort (top/worst by optimality, quick/slow by time; each
+#     ~10% of the completed-all pool) vs an "all players" baseline column.
+#     Cohorts overlap (a user can be both top and slow), so each is built as
+#     its own trace subset rather than a single mutually-exclusive grouping.
+#     Rows = share of MOVES / share of TIME; columns = baseline + each cohort.
 # ===========================================================================
-split <- scored %>%
-  mutate(grp = if_else(top_solver, "Top solvers", "Everyone else")) %>%
-  group_by(level, grp) %>%
-  summarise(`moves: thinking`  = sum(thinking_moves) / sum(moves),
-            `moves: execution` = 1 - sum(thinking_moves) / sum(moves),
-            `time: thinking`   = sum(thinking_ms) / sum(thinking_ms + execution_ms),
-            `time: execution`  = sum(execution_ms) / sum(thinking_ms + execution_ms),
-            .groups = "drop") %>%
+think_exec_shares <- function(df, grp_label) {
+  df %>%
+    group_by(level) %>%
+    summarise(`moves: thinking`  = sum(thinking_moves) / sum(moves),
+              `moves: execution` = 1 - sum(thinking_moves) / sum(moves),
+              `time: thinking`   = sum(thinking_ms) / sum(thinking_ms + execution_ms),
+              `time: execution`  = sum(execution_ms) / sum(thinking_ms + execution_ms),
+              .groups = "drop") %>%
+    mutate(grp = grp_label)
+}
+
+split <- bind_rows(
+  think_exec_shares(scored, "all players"),
+  map_dfr(seq_along(SOLVER_COHORTS), function(j)
+    think_exec_shares(filter(scored, .data[[SOLVER_COHORTS[j]]] %in% TRUE),
+                      SOLVER_LABELS[j]))
+) %>%
   pivot_longer(c(-level, -grp), names_to = "kv", values_to = "share") %>%
   separate(kv, c("facet", "kind"), sep = ": ") %>%
   mutate(kind = factor(kind, levels = c("execution", "thinking")),
          facet = recode(facet, moves = "share of MOVES", time = "share of TIME"),
-         grp = factor(grp, levels = c("Top solvers", "Everyone else")))
+         grp = factor(grp, levels = c("all players", SOLVER_LABELS)))
 
 save_fig(
   ggplot(split, aes(level, share, fill = kind)) +
     geom_col(width = 0.8) +
     geom_text(aes(label = ifelse(share > 0.06, scales::percent(share, 1), "")),
-              position = position_stack(vjust = 0.5), size = 2.9, color = "white") +
+              position = position_stack(vjust = 0.5), size = 2.4, color = "white") +
     facet_grid(facet ~ grp) +
     scale_fill_manual(values = c(execution = "#5b8cff", thinking = "#f5b841")) +
     scale_y_continuous(labels = scales::percent) +
-    labs(title = "Thinking vs execution: top solvers vs everyone else",
-         subtitle = "Top solvers = the top_solver cohort (top 10% by mean optimality, completed-all players).\nA \"thinking\" move is one preceded by a wait of >=1 second.\nShare of MOVES = thinking vs fluent moves; share of TIME = total time spent in each.",
+    labs(title = "Thinking vs execution, by solver cohort",
+         subtitle = "Columns = all players, then each solver cohort (top/worst by optimality, quick/slow by time; each ~10% of the completed-all pool).\nA \"thinking\" move is one preceded by a wait of >=1 second.\nShare of MOVES = thinking vs fluent moves; share of TIME = total time spent in each.",
          x = NULL, y = NULL, fill = NULL) +
-    theme_mow + theme(axis.text.x = element_text(angle = 20, hjust = 1, size = 8),
+    theme_mow + theme(axis.text.x = element_text(angle = 35, hjust = 1, size = 7),
                       strip.text.y = element_text(angle = -90)),
-  "q8_think_vs_exec.png", 11, 7.5)
+  "q8_think_vs_exec.png", 14, 7.5)
 
 # ===========================================================================
 # Q9. Does thinking pay off?
