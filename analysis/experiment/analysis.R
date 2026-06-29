@@ -1,17 +1,22 @@
 # Mow-the-Lawn player-behaviour analysis - all static figures in one script.
 #
-# Inputs (from build_metrics.py / build_optimal.py):
-#   trace_metrics.csv          one row per trace (metrics + demographics + cohort flags)
-#   cell_aggregates.csv        per-cell visit-flow + pause stats, per round
-#   cell_aggregates_by_cohort.csv  same, split by solver cohort (granular Q6/Q7)
-#   modal_paths.csv            most common exact path per round (with geometry)
-#   optimal_paths.csv          the exact Concorde optimal path per round (geometry)
+# Self-contained: every metric is derived in R straight from the raw experiment
+# data, so there are no Python-built intermediate CSVs to keep in sync. Inputs:
+#   mow_test_rows.csv    raw traces (result = JSON [{x,y,t}, ...] per play)
+#   mow_users_rows.csv   demographics, one row per user
+#   optimal_paths.csv    exact Concorde optimal path + move count per round
+#                        (the one Python-produced input - Concorde can't run in
+#                         R; regenerate with build_optimal.py when levels change)
 # Output: figures/*.png  (+ summary stats printed to console)
 #
 # Optimality ("score") = optimal_moves / player_moves  (1.0 = optimal play),
 # where optimal_moves is the exact Concorde minimum covering walk per level.
-# A "thinking" move = wait >= 1s before the move (PAUSE_MS in build_metrics.py).
+# A "thinking" move = wait >= 1s before the move (PAUSE_MS below).
 # Tutorial is guided, so it is dropped from optimality/scoring/pause figures.
+#
+# NOTE: the path-shape classification figures (q1 pattern mix, q4b patterns by
+# demographic) are no longer produced here - the classifier is a Python-only
+# concern and those figures are frozen. Their existing PNGs are left untouched.
 
 library(tidyverse)
 library(jsonlite)
@@ -19,7 +24,8 @@ library(jsonlite)
 out_dir <- "figures"
 dir.create(out_dir, showWarnings = FALSE)
 LEVELS  <- c("tutorial", "round1", "round2", "bonus1", "bonus2", "bonus3")
-PALETTE <- c(snake = "#3ddc97", spiral = "#5b8cff", random_walk = "#ff5c8a")
+DEMOS   <- c("age", "style", "gaming", "hand", "optimization")
+PAUSE_MS <- 1000   # wait >= this (ms) before a move = a deliberate "thinking" move
 
 save_fig <- function(p, name, w = 10, h = 6) {
   ggsave(file.path(out_dir, name), p, width = w, height = h, dpi = 130, bg = "white")
@@ -32,60 +38,171 @@ theme_mow <- theme_minimal(base_size = 12) +
         strip.text = element_text(face = "bold"))
 theme_grid <- theme(aspect.ratio = 1, panel.grid = element_blank(), axis.text = element_blank())
 
-m <- read_csv("trace_metrics.csv", show_col_types = FALSE) %>%
-  mutate(level = factor(level, levels = LEVELS, ordered = TRUE),
-         pattern = factor(pattern, levels = c("snake", "spiral", "random_walk")))
+# ===========================================================================
+# Load raw data and derive every metric in R (replaces the Python CSVs).
+# ===========================================================================
+optimal_raw <- read_csv("optimal_paths.csv", show_col_types = FALSE)
+users <- read_csv("mow_users_rows.csv", show_col_types = FALSE) %>%
+  select(user_id, all_of(DEMOS))
+
+# --- parse each trace's {x,y,t} JSON into a long point table -----------------
+# u=-y, d=+y, l=-x, r=+x (game convention); t is elapsed ms since trace start.
+safe_parse <- function(s) {
+  out <- tryCatch(fromJSON(s), error = function(e) NULL)
+  if (is.data.frame(out) && nrow(out) >= 2 && all(c("x", "y", "t") %in% names(out)))
+    tibble(x = as.integer(out$x), y = as.integer(out$y), t = as.numeric(out$t))
+  else NULL
+}
+
+message("parsing raw traces ...")
+raw <- read_csv("mow_test_rows.csv", show_col_types = FALSE) %>%
+  filter(level %in% LEVELS)
+parsed <- raw %>%
+  transmute(trace_id = id, user_id, level, platform, created_at,
+            P = map(result, safe_parse)) %>%
+  filter(!map_lgl(P, is.null))
+trace_info <- parsed %>% select(trace_id, user_id, level, platform, created_at)
+
+# one row per point; dt = wait *before* this point's move (t - prev t),
+# dt_after = wait *after* sitting here (next t - t, used for per-cell pauses).
+pts <- parsed %>%
+  select(trace_id, level, P) %>%
+  unnest(P) %>%
+  group_by(trace_id) %>%
+  mutate(i = row_number(), npts = n(),
+         dt = t - lag(t), dt_after = lead(t) - t) %>%
+  ungroup()
+message(sprintf("  %s traces, %s points",
+                scales::comma(n_distinct(pts$trace_id)), scales::comma(nrow(pts))))
+
+# --- per-trace metrics -------------------------------------------------------
+m <- pts %>%
+  group_by(trace_id) %>%
+  summarise(
+    level        = first(level),
+    points       = n(),
+    moves        = points - 1,
+    unique_cells = n_distinct(paste(x, y)),
+    revisits     = points - unique_cells,
+    duration_ms  = last(t) - first(t),
+    duration_s   = round(duration_ms / 1000, 3),
+    ms_per_move  = if_else(moves > 0, round(duration_ms / moves, 1), NA_real_),
+    thinking_moves     = sum(dt >= PAUSE_MS, na.rm = TRUE),
+    thinking_frac      = if_else(moves > 0, round(thinking_moves / moves, 4), NA_real_),
+    thinking_ms        = sum(dt[dt >= PAUSE_MS], na.rm = TRUE),
+    execution_ms       = sum(dt[dt <  PAUSE_MS], na.rm = TRUE),
+    thinking_time_frac = if_else(duration_ms > 0, round(thinking_ms / duration_ms, 4), NA_real_),
+    longest_pause_ms   = if_else(any(!is.na(dt)), max(dt, na.rm = TRUE), 0),
+    bbox_w = max(x) - min(x) + 1,
+    bbox_h = max(y) - min(y) + 1,
+    .groups = "drop") %>%
+  left_join(trace_info %>% select(trace_id, user_id, platform, created_at), by = "trace_id") %>%
+  left_join(select(optimal_raw, level, optimal_moves), by = "level") %>%
+  mutate(optimality = round(pmin(optimal_moves / moves, 1.0), 4),
+         redundancy = round(moves / optimal_moves, 4)) %>%
+  left_join(users, by = "user_id") %>%
+  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
+
 # rounds used for optimality / scoring / pauses (exclude guided tutorial)
 scored <- m %>% filter(level != "tutorial", is.finite(optimality))
 
 # ---------------------------------------------------------------------------
 # Behavioural cohorts: segment players by *how they played*, an alternative to
-# the self-reported demographics. These are computed once in build_metrics.py
-# (single source of truth) and ride along on every trace as user-level columns;
-# see add_cohorts() there for the exact definitions. In brief:
+# the self-reported demographics. Each is a user-level flag joined onto every
+# trace, so any figure can facet/filter by cohort (see COHORTS).
 #   completed_all - played every non-tutorial round: deeply engaged, deliberate.
 #                   Also the consistent pool (fixed round set) used wherever a
 #                   per-user mean would otherwise be confounded by *which* rounds
 #                   a player attempted - e.g. Q10's false optimality-1.0 spike.
-#   top_solver    - top 10% by mean optimality,    *within completed_all*
-#   worst_solver  - bottom 10% by mean optimality,  *within completed_all*
-#   quick_solver  - fastest 10% by mean solve time, *within completed_all*
-#   slow_solver   - slowest 10% by mean solve time, *within completed_all*
-#   opt_pct/dur_pct - each user's percentile rank in the completed_all pool.
+#   top/worst_solver  - top/bottom 10% by mean optimality,  *within completed_all*
+#   quick/slow_solver - fastest/slowest 10% by mean solve time, *within completed_all*
+# All tails are taken inside completed_all so the round set is held fixed -
+# otherwise easy-round-only players dominate (mean optimality piles up at 1.0
+# and their short easy rounds look "quick"). opt_pct/dur_pct = each user's
+# percentile rank within the pool (fraction at or below).
 COHORTS  <- c("completed_all", "top_solver", "worst_solver", "quick_solver", "slow_solver")
 SOLVER_COHORTS <- c("top_solver", "worst_solver", "quick_solver", "slow_solver")  # the 4 tails
 SOLVER_LABELS  <- c("top", "worst", "quick", "slow")  # short facet labels, same order
-COHORT_Q <- 0.10   # tail fraction used to build the cohorts (for Q13 ref lines)
+COHORT_Q <- 0.10
 n_rounds_total <- n_distinct(scored$level)
 
-# one row per user with their (constant) cohort flags + percentile ranks
-user_stats <- scored %>%
+user_agg <- scored %>%
   group_by(user_id) %>%
-  summarise(across(all_of(c(COHORTS, "opt_pct", "dur_pct")), first), .groups = "drop")
+  summarise(completed_all = n_distinct(level) == n_rounds_total,
+            mean_opt = mean(optimality),
+            mean_dur = mean(duration_s[duration_s > 0]),  # ignore 0s; avg solve time
+            .groups = "drop")
+
+# all cohort thresholds taken only over the completed-all pool (fixed round set)
+ca     <- user_agg %>% filter(completed_all)
+opt_hi <- quantile(ca$mean_opt, 1 - COHORT_Q, na.rm = TRUE)
+opt_lo <- quantile(ca$mean_opt, COHORT_Q, na.rm = TRUE)
+ca_dur <- ca$mean_dur[is.finite(ca$mean_dur)]
+dur_lo <- quantile(ca_dur, COHORT_Q, na.rm = TRUE)
+dur_hi <- quantile(ca_dur, 1 - COHORT_Q, na.rm = TRUE)
+opt_ecdf <- ecdf(ca$mean_opt)   # fraction of pool at or below -> percentile rank
+dur_ecdf <- ecdf(ca_dur)
+
+user_stats <- user_agg %>%
+  mutate(opt_pct = if_else(completed_all, round(opt_ecdf(mean_opt), 4), NA_real_),
+         dur_pct = if_else(completed_all & is.finite(mean_dur),
+                           round(dur_ecdf(mean_dur), 4), NA_real_),
+         top_solver   = completed_all & mean_opt >= opt_hi,
+         worst_solver = completed_all & mean_opt <= opt_lo,
+         quick_solver = completed_all & is.finite(mean_dur) & mean_dur <= dur_lo,
+         slow_solver  = completed_all & is.finite(mean_dur) & mean_dur >= dur_hi)
+
+scored <- scored %>%
+  left_join(select(user_stats, user_id, all_of(COHORTS), opt_pct, dur_pct),
+            by = "user_id")
 
 message("cohort sizes:")
 for (cset in COHORTS)
   message(sprintf("  %-13s %5d of %d users", cset,
                   sum(user_stats[[cset]], na.rm = TRUE), nrow(user_stats)))
 
-# ===========================================================================
-# Q1. Path-shape mix by round
-# ===========================================================================
-mix <- m %>% filter(!is.na(pattern)) %>%
-  count(level, pattern) %>% group_by(level) %>% mutate(prop = n / sum(n)) %>% ungroup()
+# --- per-cell visit-flow + pause stats (reused for overall + per-cohort) -----
+# Takes a long point table (optionally a cohort subset) -> one row per cell:
+#   visits          total times any trace stepped on the cell
+#   traces_touching distinct traces that reached it; trace_share = / n_traces
+#   mean_step_frac  avg point-in-path (0=start,1=end) when first reached
+#   pauses          # of >=1s waits that happened while sitting on the cell
+#   pause_rate      share of visits followed by such a pause; mean_pause_ms its size
+cell_aggregate <- function(p) {
+  n_tr <- p %>% distinct(level, trace_id) %>% count(level, name = "n_traces")
+  vis <- p %>%
+    group_by(level, x, y) %>%
+    summarise(visits   = n(),
+              pauses   = sum(dt_after >= PAUSE_MS, na.rm = TRUE),
+              pause_ms = sum(dt_after[dt_after >= PAUSE_MS], na.rm = TRUE),
+              .groups = "drop")
+  arr <- p %>%
+    group_by(level, trace_id, x, y) %>%
+    summarise(frac = (min(i) - 1) / pmax(first(npts) - 1, 1), .groups = "drop") %>%
+    group_by(level, x, y) %>%
+    summarise(traces_touching = n(), step_sum = sum(frac), .groups = "drop")
+  vis %>%
+    left_join(arr, by = c("level", "x", "y")) %>%
+    left_join(n_tr, by = "level") %>%
+    mutate(trace_share      = round(traces_touching / n_traces, 4),
+           mean_step_frac   = round(step_sum / traces_touching, 4),
+           pauses_per_trace = round(pauses / n_traces, 4),
+           pause_rate       = if_else(visits > 0, round(pauses / visits, 4), NA_real_),
+           mean_pause_ms    = if_else(pauses > 0, round(pause_ms / pauses, 1), 0),
+           level = factor(level, levels = LEVELS, ordered = TRUE))
+}
 
-save_fig(
-  ggplot(mix, aes(level, prop, fill = pattern)) +
-    geom_col(width = 0.8) +
-    geom_text(aes(label = ifelse(prop > 0.06, scales::percent(prop, 1), "")),
-              position = position_stack(vjust = 0.5), size = 3.2, color = "white") +
-    scale_fill_manual(values = PALETTE) +
-    scale_y_continuous(labels = scales::percent) +
-    labs(title = "Path-shape mix shifts sharply across rounds",
-         subtitle = "Spiral dominates early; snake takes over on the largest grids",
-         x = NULL, y = "share of traces", fill = "pattern") +
-    theme_mow,
-  "q1_pattern_mix_by_round.png", 9, 5)
+cells <- cell_aggregate(pts)
+
+# the same aggregates restricted to each solver cohort (granular Q6/Q7)
+cells_co <- map_dfr(SOLVER_COHORTS, function(co) {
+  uids <- user_stats$user_id[user_stats[[co]] %in% TRUE]
+  tids <- trace_info$trace_id[trace_info$user_id %in% uids]
+  sub  <- filter(pts, trace_id %in% tids)
+  if (nrow(sub) == 0) return(NULL)
+  cell_aggregate(sub) %>% mutate(cohort = co)
+}) %>%
+  mutate(cohort = factor(cohort, levels = SOLVER_COHORTS, labels = SOLVER_LABELS))
 
 # ===========================================================================
 # Q2. Time taken vs optimality, by round (does taking your time pay off?)
@@ -155,10 +272,8 @@ save_fig(
   "q3_top_vs_average.png", 9, 8)
 
 # ===========================================================================
-# Q4. Patterns + optimality by demographic group
+# Q4. Optimality by demographic group
 # ===========================================================================
-DEMOS <- c("age", "style", "gaming", "hand", "optimization")
-
 eff_demo <- scored %>%
   pivot_longer(all_of(DEMOS), names_to = "demo", values_to = "group") %>% filter(!is.na(group))
 save_fig(
@@ -171,20 +286,6 @@ save_fig(
          x = NULL, y = "optimality") +
     theme_mow + theme(axis.text.x = element_text(angle = 25, hjust = 1, size = 8)),
   "q4a_optimality_by_demographic.png", 11, 8)
-
-pat_demo <- m %>% filter(!is.na(pattern), level != "tutorial") %>%
-  pivot_longer(all_of(DEMOS), names_to = "demo", values_to = "group") %>% filter(!is.na(group)) %>%
-  count(demo, group, pattern) %>% group_by(demo, group) %>% mutate(prop = n / sum(n)) %>% ungroup()
-save_fig(
-  ggplot(pat_demo, aes(group, prop, fill = pattern)) +
-    geom_col(width = 0.8) +
-    facet_wrap(~demo, scales = "free_x", ncol = 2) +
-    scale_fill_manual(values = PALETTE) +
-    scale_y_continuous(labels = scales::percent) +
-    labs(title = "Path-shape mix by demographic group", subtitle = "non-tutorial rounds",
-         x = NULL, y = "share of traces", fill = "pattern") +
-    theme_mow + theme(axis.text.x = element_text(angle = 25, hjust = 1, size = 8)),
-  "q4b_patterns_by_demographic.png", 11, 8)
 
 # ===========================================================================
 # Q5. Did optimality improve between rounds?
@@ -218,9 +319,6 @@ if (nrow(paired) > 2) {
 # ===========================================================================
 # Q6. The average path (visit-flow heatmap) + most common exact path
 # ===========================================================================
-cells <- read_csv("cell_aggregates.csv", show_col_types = FALSE) %>%
-  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
-
 save_fig(
   ggplot(filter(cells, trace_share >= 0.5), aes(x, y, fill = mean_step_frac)) +
     geom_tile() +
@@ -236,10 +334,6 @@ save_fig(
 
 # Q6 (granular): the average path split by solver cohort - do the best/worst and
 # fastest/slowest players sweep the lawn differently? Rows = round, cols = cohort.
-cells_co <- read_csv("cell_aggregates_by_cohort.csv", show_col_types = FALSE) %>%
-  mutate(level  = factor(level, levels = LEVELS, ordered = TRUE),
-         cohort = factor(cohort, levels = SOLVER_COHORTS, labels = SOLVER_LABELS))
-
 save_fig(
   ggplot(filter(cells_co, trace_share >= 0.5), aes(x, y, fill = mean_step_frac)) +
     geom_tile() +
@@ -253,13 +347,28 @@ save_fig(
     theme_mow + theme_grid + theme(strip.text = element_text(face = "bold", size = 8)),
   "q6d_visit_heatmaps_by_cohort.png", 13, 18)
 
-modal <- read_csv("modal_paths.csv", show_col_types = FALSE) %>%
-  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
+# most common exact path per round, derived from the raw point sequences
+sigs <- pts %>%
+  arrange(trace_id, i) %>%
+  group_by(trace_id) %>%
+  summarise(level = first(level),
+            sig = paste(x, y, sep = ",", collapse = ";"), .groups = "drop")
+modal <- sigs %>%
+  count(level, sig, name = "cnt") %>%
+  group_by(level) %>%
+  summarise(n_traces = sum(cnt), modal_count = max(cnt), distinct_paths = n(),
+            modal_sig = sig[which.max(cnt)], .groups = "drop") %>%
+  mutate(modal_share = round(modal_count / n_traces, 4),
+         level = factor(level, levels = LEVELS, ordered = TRUE))
+parse_sig <- function(s) {
+  xy <- str_split_fixed(str_split(s, ";")[[1]], ",", 2)
+  tibble(x = as.integer(xy[, 1]), y = as.integer(xy[, 2]))
+}
 labs_df <- modal %>%
   mutate(lab = sprintf("%s\n%.0f%% of traces (%d of %d) · %d distinct routes",
                        level, 100 * modal_share, modal_count, n_traces, distinct_paths))
 paths <- modal %>%
-  mutate(path = map(path_json, ~ fromJSON(.x) %>% as_tibble())) %>%
+  mutate(path = map(modal_sig, parse_sig)) %>%
   select(level, path) %>% unnest(path) %>%
   group_by(level) %>% mutate(step = row_number()) %>% ungroup() %>%
   left_join(select(labs_df, level, lab), by = "level") %>%
@@ -283,7 +392,7 @@ save_fig(
 #      optimality. Obstacles forcing revisits show up as the line crossing a
 #      cell twice (e.g. bonus1's optimum needs 86 moves to cover 84 cells).
 # ---------------------------------------------------------------------------
-opt <- read_csv("optimal_paths.csv", show_col_types = FALSE) %>%
+opt <- optimal_raw %>%
   mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
 opt_labs <- opt %>%
   mutate(lab = sprintf("%s\noptimal: %d moves to cover %d cells", level, optimal_moves, open_cells))
@@ -494,16 +603,16 @@ save_fig(
 
 # ===========================================================================
 # Q14. Distribution of per-move wait times (ALL moves)
-#   move_waits.csv is long-format: one row per move, dt_ms = wait before it
-#   (t[i]-t[i-1]). This is the raw quantity behind the trace-level thinking_*
-#   and cell-level pause_* summaries, exported un-aggregated so the full
-#   wait-time distribution is visible. Waits span ms to multi-minute idle
-#   pauses, so plot on a log10 axis; the dashed line is PAUSE_MS, the 1s
-#   threshold that splits "thinking" from fluent "execution".
+#   One observation per move = dt, the wait *before* it (t[i]-t[i-1]). This is
+#   the raw quantity behind the trace-level thinking_* and cell-level pause_*
+#   summaries. Waits span ms to multi-minute idle pauses, so plot on a log10
+#   axis; the dashed line is PAUSE_MS, the 1s threshold that splits "thinking"
+#   from fluent "execution".
 # ===========================================================================
-PAUSE_MS <- 1000
-waits <- read_csv("move_waits.csv", show_col_types = FALSE) %>%
-  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
+waits <- pts %>%
+  filter(!is.na(dt)) %>%
+  transmute(trace_id, level = factor(level, levels = LEVELS, ordered = TRUE),
+            dt_ms = dt, is_pause = dt >= PAUSE_MS)
 # log axis needs dt > 0 (a few moves share a timestamp -> dt = 0)
 wait_pos <- waits %>% filter(dt_ms > 0)
 message(sprintf("Q14: %d moves total, %d with dt>0 (%d zero-wait dropped from log plot)",
