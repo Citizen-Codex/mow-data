@@ -72,41 +72,43 @@ save_fig(
   "q1_pattern_mix_by_round.png", 9, 5)
 
 # ===========================================================================
-# Q2. Time taken vs total moves, by round (Simpson's paradox)
+# Q2. Time taken vs optimality, by round (does taking your time pay off?)
 # ===========================================================================
-# Cap moves and time per round at this percentile to drop abandoned-device
-# (huge time) and spam-click (huge moves) traces. Per-round because move counts
-# scale with grid size. Adjust CAP_Q to tighten/loosen.
+# Optimality (not raw moves) is the skill measure: moves scale with grid size,
+# so move counts only tell you the grid, not how well someone played. Cap time
+# per round at this percentile to drop abandoned-device (huge idle time) traces.
+# Adjust CAP_Q to tighten/loosen.
 CAP_Q <- 0.99
 q2d <- scored %>%
   filter(duration_s > 0) %>%
   group_by(level) %>%
-  filter(moves      <= quantile(moves, CAP_Q, na.rm = TRUE),
-         duration_s <= quantile(duration_s, CAP_Q, na.rm = TRUE)) %>%
+  filter(duration_s <= quantile(duration_s, CAP_Q, na.rm = TRUE)) %>%
   ungroup()
-message(sprintf("Q2: capped at p%g per round, kept %d of %d traces (dropped %d outliers)",
+message(sprintf("Q2: capped time at p%g per round, kept %d of %d traces (dropped %d outliers)",
                 CAP_Q * 100, nrow(q2d), sum(scored$duration_s > 0),
                 sum(scored$duration_s > 0) - nrow(q2d)))
 
 q2_lab <- q2d %>% group_by(level) %>%
-  summarise(rho = cor(moves, duration_s, method = "spearman"),
-            x = min(moves), y = max(duration_s), .groups = "drop") %>%
+  summarise(rho = cor(duration_s, optimality, method = "spearman"),
+            x = min(duration_s), y = max(optimality), .groups = "drop") %>%
   mutate(lab = sprintf("rho = %.2f", rho))
 
 save_fig(
-  ggplot(q2d, aes(moves, duration_s)) +
-    geom_point(aes(color = level), alpha = 0.3, size = 1, show.legend = FALSE) +
-    geom_smooth(method = "lm", se = FALSE, color = "grey20", linewidth = 0.7) +
+  ggplot(q2d, aes(duration_s, optimality)) +
+    geom_point(aes(color = level), alpha = 0.25, size = 1, show.legend = FALSE) +
+    geom_smooth(method = "loess", span = 0.9, se = TRUE,
+                color = "grey20", fill = "grey60", alpha = 0.25, linewidth = 0.7) +
     geom_text(data = q2_lab, aes(x, y, label = lab),
               hjust = 0, vjust = 1, family = "mono", size = 3.4, color = "grey25") +
-    facet_wrap(~level, scales = "free", ncol = 3) +
+    facet_wrap(~level, scales = "free_x", ncol = 3) +
     scale_color_brewer(palette = "Set2") +
-    scale_y_log10(labels = scales::comma) +
-    labs(title = "Time taken vs total moves, by round",
-         subtitle = "Moves & time capped at the 99th percentile per round (drops abandoned-device and spam-click traces). Log time axis.",
-         x = "total moves", y = "duration (s, log scale)") +
+    scale_x_log10(labels = scales::comma) +
+    coord_cartesian(ylim = c(0.6, 1)) +
+    labs(title = "Time taken vs optimality, by round",
+         subtitle = "Each point is a trace; loess fit with 95% CI. Within every round, players who spend longer score modestly higher (rho > 0).\nTime capped at the 99th percentile per round (drops abandoned-device traces). Log time axis.",
+         x = "duration (s, log scale)", y = "optimality") +
     theme_mow,
-  "q2_time_vs_moves.png", 11, 7)
+  "q2_time_vs_optimality.png", 11, 7)
 
 # ===========================================================================
 # Q3. Top scorer vs everyone else (top optimality decile within each round)
