@@ -1,12 +1,14 @@
 # Mow-the-Lawn player-behaviour analysis - all static figures in one script.
 #
-# Inputs (from build_metrics.py):
+# Inputs (from build_metrics.py / build_optimal.py):
 #   trace_metrics.csv     one row per trace (metrics + demographics)
 #   cell_aggregates.csv   per-cell visit-flow + pause stats, per round
 #   modal_paths.csv       most common exact path per round (with geometry)
+#   optimal_paths.csv     the exact Concorde optimal path per round (geometry)
 # Output: figures/*.png  (+ summary stats printed to console)
 #
-# Optimality ("score") = (unique_cells - 1) / moves  (1.0 = no backtracking).
+# Optimality ("score") = optimal_moves / player_moves  (1.0 = optimal play),
+# where optimal_moves is the exact Concorde minimum covering walk per level.
 # A "thinking" move = wait >= 1s before the move (PAUSE_MS in build_metrics.py).
 # Tutorial is guided, so it is dropped from optimality/scoring/pause figures.
 
@@ -34,6 +36,21 @@ m <- read_csv("trace_metrics.csv", show_col_types = FALSE) %>%
          pattern = factor(pattern, levels = c("snake", "spiral", "random_walk")))
 # rounds used for optimality / scoring / pauses (exclude guided tutorial)
 scored <- m %>% filter(level != "tutorial", is.finite(optimality))
+
+# completed_all: did this user play *every* non-tutorial round? Per-user stats
+# otherwise mix players who only did the easy early rounds with those who did
+# all of them (only ~38% ever attempt a bonus round). Filtering to this flag
+# gives a consistent pool for analyses where the set of rounds must be held
+# fixed (e.g. Q10's per-user mean optimality, where the easy-round-only players
+# pile up a false spike at optimality 1.0).
+n_rounds_total <- n_distinct(scored$level)
+scored <- scored %>%
+  group_by(user_id) %>%
+  mutate(completed_all = n_distinct(level) == n_rounds_total) %>%
+  ungroup()
+message(sprintf("completed_all: %d of %d users played all %d rounds",
+                n_distinct(scored$user_id[scored$completed_all]),
+                n_distinct(scored$user_id), n_rounds_total))
 
 # ===========================================================================
 # Q1. Path-shape mix by round
@@ -132,7 +149,7 @@ save_fig(
     facet_wrap(~demo, scales = "free_x", ncol = 2) +
     coord_cartesian(ylim = c(0.6, 1)) +
     labs(title = "Optimality by demographic group",
-         subtitle = "optimality = (cells covered - 1) / moves;  1.0 = no backtracking",
+         subtitle = "optimality = optimal moves / player moves;  1.0 = the Concorde optimum",
          x = NULL, y = "optimality") +
     theme_mow + theme(axis.text.x = element_text(angle = 25, hjust = 1, size = 8)),
   "q4a_optimality_by_demographic.png", 11, 8)
@@ -224,6 +241,35 @@ save_fig(
     theme_mow + theme_grid + theme(strip.text = element_text(face = "bold", size = 9)),
   "q6_modal_paths.png", 12, 8)
 
+# ---------------------------------------------------------------------------
+# Q6c. The exact OPTIMAL path per round (Concorde) - the baseline that defines
+#      optimality. Obstacles forcing revisits show up as the line crossing a
+#      cell twice (e.g. bonus1's optimum needs 86 moves to cover 84 cells).
+# ---------------------------------------------------------------------------
+opt <- read_csv("optimal_paths.csv", show_col_types = FALSE) %>%
+  mutate(level = factor(level, levels = LEVELS, ordered = TRUE))
+opt_labs <- opt %>%
+  mutate(lab = sprintf("%s\noptimal: %d moves to cover %d cells", level, optimal_moves, open_cells))
+opt_paths <- opt %>%
+  mutate(path = map(path_json, ~ fromJSON(.x) %>% as_tibble())) %>%
+  select(level, path) %>% unnest(path) %>%
+  group_by(level) %>% mutate(step = row_number()) %>% ungroup() %>%
+  left_join(select(opt_labs, level, lab), by = "level") %>%
+  mutate(lab = factor(lab, levels = opt_labs$lab[order(match(opt_labs$level, LEVELS))]))
+
+save_fig(
+  ggplot(opt_paths, aes(x, y)) +
+    geom_path(aes(color = step), linewidth = 1.1, lineend = "round") +
+    geom_point(data = ~ filter(.x, step == 1), color = "#3ddc97", size = 2.6) +
+    facet_wrap(~lab, scales = "free", ncol = 3) +
+    scale_y_reverse() +
+    scale_color_viridis_c(option = "magma", name = "step") +
+    labs(title = "The exact optimal path, by round (Concorde solver)",
+         subtitle = "Minimum-length covering walk from the top-left start. This is the baseline optimality is scored against (optimality = these moves / player moves).",
+         x = NULL, y = NULL) +
+    theme_mow + theme_grid + theme(strip.text = element_text(face = "bold", size = 9)),
+  "q6c_optimal_paths.png", 12, 8)
+
 # ===========================================================================
 # Q7. Where players stop to think (pause-rate heatmap)
 # ===========================================================================
@@ -299,22 +345,27 @@ save_fig(
 
 # ===========================================================================
 # Q10. Score distribution ACROSS USERS (each user's mean optimality over their
-#      rounds). Per-user averaging removes the round-difficulty confound - some
-#      rounds force overlaps, so a per-trace histogram just shows round bands.
+#      rounds). Restricted to players who completed EVERY round (completed_all):
+#      per-user averaging only cancels the round-difficulty confound when the
+#      set of rounds is held fixed. Without this filter the ~62% of players who
+#      stop after the easy early rounds average to ~1.0 and pile up a false
+#      "perfect player" spike at optimality 1.0 (round1's optimum is trivial).
 # ===========================================================================
 user_eff <- scored %>%
+  filter(completed_all) %>%
   group_by(user_id) %>%
   summarise(optimality = mean(optimality), n_rounds = n(), .groups = "drop")
 md <- median(user_eff$optimality)
+
 save_fig(
   ggplot(user_eff, aes(optimality)) +
-    geom_histogram(binwidth = 0.01, fill = "#5b8cff", color = "white", linewidth = 0.2) +
+    geom_histogram(binwidth = 0.005, fill = "#5b8cff", color = "white", linewidth = 0.2) +
     geom_vline(xintercept = md, linetype = "dashed", color = "#ff5c8a", linewidth = 0.8) +
     annotate("text", x = md, y = Inf, label = sprintf("  median %.3f", md),
              hjust = 0, vjust = 1.5, color = "#ff5c8a", family = "mono", size = 3.6) +
     scale_x_continuous(limits = c(0.5, 1.02)) +
     labs(title = "Player skill: distribution of average optimality per user",
-         subtitle = sprintf("One value per player = mean optimality across their non-tutorial rounds (n = %s players).\nScore = (cells covered - 1) / moves; 1.0 = no backtracking.", scales::comma(nrow(user_eff))),
+         subtitle = sprintf("One value per player = mean optimality across all %d rounds, restricted to players who completed every round (n = %s players).\nScore = optimal moves / player moves; 1.0 = the Concorde optimum.", n_rounds_total, scales::comma(nrow(user_eff))),
          x = "average optimality per user", y = "players") +
     theme_mow,
   "q10_score_hist_overall.png", 10, 5.5)

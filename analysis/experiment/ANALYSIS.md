@@ -14,6 +14,7 @@ grid; rounds grow from 6×6 (tutorial/round1) to 14×14 (bonus3).
 ## Pipeline
 
 ```
+build_optimal.py   ->  optimal_paths.csv      exact Concorde optimal path + move count per round
 build_metrics.py   ->  trace_metrics.csv      one row per trace (metrics + demographics)
                        cell_aggregates.csv    per-cell visit-flow + pause stats, per round
                        modal_paths.csv        most common exact path per round (with geometry)
@@ -22,9 +23,14 @@ analysis.R         ->  figures/q1..q12*.png   all static figures; summary stats 
 cohort_explorer.html   open in a browser; reads cohort_data.js
 ```
 
-Three derived CSVs feed everything: `trace_metrics.csv` (tidy per-trace table),
-`cell_aggregates.csv` (per-cell heatmap inputs), `modal_paths.csv` (modal-path
-geometry). Summary stats print to the console rather than to disk.
+`build_optimal.py` reads the canonical level layouts from the game repo
+(`../../../mow/src/data/levels.json`) and solves each level's minimum-length
+covering walk exactly with Concorde (`src/concorde`). `build_metrics.py` imports
+that optimum (`level_optima()`) to score every trace. Four derived CSVs feed
+everything: `optimal_paths.csv` (the optimal baseline + geometry),
+`trace_metrics.csv` (tidy per-trace table), `cell_aggregates.csv` (per-cell
+heatmap inputs), `modal_paths.csv` (modal-path geometry). Summary stats print to
+the console rather than to disk.
 
 ### Running
 
@@ -32,7 +38,8 @@ A scientific Python env (pandas, scikit-learn) and R (tidyverse, jsonlite) are
 required. The project normally uses `uv`; any env with those libs works.
 
 ```bash
-python build_metrics.py     # regenerate all derived data
+python build_optimal.py     # solve exact optima -> optimal_paths.csv
+python build_metrics.py     # regenerate all derived data (imports the optima)
 Rscript analysis.R          # all figures q1-q12 + summary stats to console
 open cohort_explorer.html   # interactive
 ```
@@ -42,9 +49,14 @@ open cohort_explorer.html   # interactive
 - **pattern** — snake / spiral / random_walk, from the project's `classifier.py`
   (char-ngram logistic regression; 0.97 holdout accuracy) applied to each path's
   u/d/l/r move string.
-- **optimality** = `(unique_cells - 1) / moves`. 1.0 = covered the lawn with no
-  backtracking; lower = more retracing. This is the self-contained optimality
-  proxy (no grid/solver baseline needed). `redundancy = 1/optimality`.
+- **optimality** = `optimal_moves / player_moves`. 1.0 = matched the provably
+  shortest covering walk; lower = more retracing. `optimal_moves` is the exact
+  minimum found by the Concorde TSP solver per level (`build_optimal.py`), the
+  same baseline the game scores against. `redundancy = player_moves /
+  optimal_moves` (`= 1/optimality`). Because some levels' optima must revisit
+  cells (e.g. bonus1 needs 86 moves to cover 84 cells), this is a fairer score
+  than the old self-contained `(unique_cells-1)/moves` proxy, which could never
+  reach 1.0 on those rounds. The Concorde optimal path itself is in `q6c`.
 - **thinking move** — a move preceded by a wait ≥ `PAUSE_MS` (1000 ms, set in
   `build_metrics.py`); the rest are fluent **execution** moves. `thinking_frac` is
   the share of such moves; `thinking_time_frac` is their share of total time.
@@ -68,13 +80,19 @@ open cohort_explorer.html   # interactive
 4. **Demographics:** clear age gradient (younger more efficient; 60+ lowest);
    self-described "I follow a set pattern" players are slightly more efficient;
    regular gamers marginally better; handedness shows no effect.
-5. **Optimality does not improve across rounds** — it's roughly flat and dips
-   slightly from round1→round2 (paired Δ ≈ -0.006, p≈1e-5) as grids get harder.
-   No within-session learning curve.
+5. **Optimality declines as grids get harder, then partly recovers — it never
+   improves with practice.** Against the true Concorde baseline, median
+   optimality falls from round1 (1.00) → round2 (0.923) → bonus1 (0.905, the
+   hardest), then ticks back up on bonus2 (0.909) and bonus3 (0.931). The paired
+   round1→round2 drop is large and decisive (Δ ≈ -0.044, p≈5e-199, n≈3.5k).
+   Strikingly, **58% of round1 traces are exactly optimal** and 25% of round2 —
+   but essentially nobody is optimal on the bonus grids (≤5%). So the curve is
+   driven by difficulty, not by within-session learning.
 6. **The "average path":** everyone starts top-left and sweeps the perimeter
    first, reaching centres last (spiral-inward tendency, clearest on bonus3). A
    single *dominant* route only exists early — tutorial 35%, round1 24%,
-   round2 13% — by the bonus rounds essentially every route is unique.
+   round2 13% — by the bonus rounds essentially every route is unique. The exact
+   Concorde optimal route for each round is drawn in `q6c_optimal_paths.png`.
 7. **Pauses cluster at the start.** A "thinking" move = >1s wait before moving
    (`PAUSE_MS`). The start corner overwhelmingly lights up (~90% of starts get a
    pause, far off-scale vs the ~11% median cell): players plan the whole route up
@@ -89,11 +107,11 @@ open cohort_explorer.html   # interactive
    95% CI), then a plateau. Plotted as a loess fit + CI over raw traces (not
    bins); the band fans out at high pause shares where data is sparse, so the flat
    tail is genuinely uncertain rather than a real decline. Correlational, not causal.
-10. **Player skill is left-skewed** (`q10`, per-user mean optimality, median ≈ 0.92):
-    most players are consistently near-optimal, with a long tail of heavy
-    backtrackers. Averaging per user (not per trace) avoids reading round
+10. **Player skill is left-skewed** (`q10`, per-user mean optimality, median ≈ 0.93,
+    skew ≈ -0.9): most players are consistently near-optimal, with a long tail of
+    heavy backtrackers. Averaging per user (not per trace) avoids reading round
     difficulty as skill — some rounds force overlaps. Per round (`q11`) the spread
-    widens on the larger bonus grids; bonus1 is the hardest (median 0.87). The
+    widens on the larger bonus grids; bonus1 is the hardest (median 0.905). The
     full by-round table prints to the console when you run `analysis.R`.
 
 ## Interactive explorer

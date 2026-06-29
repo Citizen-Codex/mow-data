@@ -7,11 +7,13 @@ classifier, joins demographics, and writes:
   - trace_metrics.csv   one row per trace, ready for static analysis / ggplot
   - cohort_data.js      window.COHORT = {...} for the interactive cohort explorer
 
-Optimality here is the self-contained proxy chosen for v1:
-    redundancy = moves / (unique_cells - 1)      (1.0 = no backtracking, >1 worse)
-    optimality = 1 / redundancy                  (1.0 best, ->0 worse)
-No grid/solver baseline is needed; it measures how much a player retraced
-their own covered cells. Swap in a true-optimal baseline later if desired.
+Optimality is measured against the provably-optimal covering walk for each
+level, found with the exact Concorde TSP solver (see build_optimal.py):
+    optimality = optimal_moves / player_moves    (1.0 = optimal, ->0 worse)
+    redundancy = player_moves / optimal_moves    (1.0 = optimal, >1 worse)
+optimal_moves comes from level_optima() and is the same baseline the game
+scores against. All recorded traces fully cover their lawn, so player_moves
+>= optimal_moves and optimality lands in (0, 1] (clipped at 1.0 defensively).
 """
 
 import json
@@ -25,6 +27,8 @@ REPO = HERE.parent.parent  # analysis/experiment -> repo root
 sys.path.insert(0, str(REPO))
 
 from classifier import train_and_evaluate  # noqa: E402
+
+from build_optimal import level_optima  # noqa: E402  (same-folder helper)
 
 TEST_CSV = HERE / "mow_test_rows.csv"
 USERS_CSV = HERE / "mow_users_rows.csv"
@@ -77,10 +81,8 @@ def trace_metrics(pts: list[dict]) -> dict:
     xs = [p["x"] for p in pts]
     ys = [p["y"] for p in pts]
     duration_ms = pts[-1]["t"] - pts[0]["t"] if points else 0
-    # optimality proxy
-    denom = unique - 1
-    redundancy = moves / denom if denom > 0 else float("nan")
-    optimality = denom / moves if moves > 0 else float("nan")
+    # optimality/redundancy are computed later, per level, against the Concorde
+    # optimal baseline (needs the level id, which isn't available here).
     # per-move timing: thinking (paused) vs execution (fluent)
     dts = [pts[i]["t"] - pts[i - 1]["t"] for i in range(1, points)]
     thinking = [d for d in dts if d >= PAUSE_MS]
@@ -105,8 +107,6 @@ def trace_metrics(pts: list[dict]) -> dict:
         "longest_pause_ms": max(dts) if dts else 0,
         "bbox_w": max(xs) - min(xs) + 1 if xs else 0,
         "bbox_h": max(ys) - min(ys) + 1 if ys else 0,
-        "redundancy": round(redundancy, 4) if redundancy == redundancy else redundancy,
-        "optimality": round(optimality, 4) if optimality == optimality else optimality,
     }
 
 
@@ -270,6 +270,15 @@ def main() -> None:
     users = pd.read_csv(USERS_CSV)[["user_id", *DEMO_COLS]]
     df = df.merge(users, on="user_id", how="left")
 
+    # --- true optimality vs the exact Concorde optimal per level ---
+    optima = level_optima()
+    print("  optimal moves per level:", {k: optima[k] for k in LEVEL_ORDER if k in optima})
+    df["optimal_moves"] = df["level"].map(optima).astype("Int64")
+    moves_ok = df["moves"] > 0
+    ratio = df["optimal_moves"].astype("float") / df["moves"]
+    df["optimality"] = ratio.where(moves_ok).clip(upper=1.0).round(4)
+    df["redundancy"] = (df["moves"] / df["optimal_moves"].astype("float")).where(moves_ok).round(4)
+
     # ordered categorical for nice plotting
     df["level"] = pd.Categorical(df["level"], categories=LEVEL_ORDER, ordered=True)
 
@@ -296,6 +305,7 @@ def main() -> None:
                     "pattern": r["pattern"],
                     "pattern_conf": None if pd.isna(r["pattern_conf"]) else r["pattern_conf"],
                     "moves": int(r["moves"]),
+                    "optimal_moves": None if pd.isna(r["optimal_moves"]) else int(r["optimal_moves"]),
                     "unique_cells": int(r["unique_cells"]),
                     "revisits": int(r["revisits"]),
                     "duration_s": r["duration_s"],
