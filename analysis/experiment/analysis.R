@@ -776,6 +776,85 @@ save_fig(
   "q14b_move_wait_histogram_by_round.png", 10, 7)
 
 # ===========================================================================
+# Q15. Mobile vs desktop optimality, overall and across levels.
+#   platform is recorded per trace (desktop / mobile) but was never used as an
+#   analysis dimension. A phone's swipe/drag input is a different control scheme
+#   than a keyboard, so it is worth asking whether device drives score.
+#   Same rigor as Q4: the headline test is on ONE value per user (mean
+#   optimality) within the completed_all pool so the round set is held fixed and
+#   traces from a user aren't pseudoreplicated. Optimality is bounded/left-skewed
+#   -> Wilcoxon rank-sum (two groups) with the rank-biserial effect size r.
+#   A user can appear on both platforms across their traces; assign each user the
+#   platform of the majority of their scored traces for the per-user test.
+# ===========================================================================
+plat <- scored %>% filter(platform %in% c("desktop", "mobile"))
+
+# --- per-user headline test (completed_all, one platform per user) -----------
+q15_user <- plat %>%
+  filter(completed_all) %>%
+  group_by(user_id) %>%
+  summarise(mean_opt = mean(optimality),
+            platform = names(which.max(table(platform))), .groups = "drop")
+
+wt <- wilcox.test(mean_opt ~ platform, data = q15_user)
+n_d <- sum(q15_user$platform == "desktop"); n_m <- sum(q15_user$platform == "mobile")
+rbis <- 1 - 2 * unname(wt$statistic) / (n_d * n_m)  # rank-biserial effect size
+med_d <- median(q15_user$mean_opt[q15_user$platform == "desktop"])
+med_m <- median(q15_user$mean_opt[q15_user$platform == "mobile"])
+message(sprintf(
+  "\nQ15 Wilcoxon on per-user mean optimality (completed_all): desktop median=%.4f (n=%d), mobile median=%.4f (n=%d), p=%.3g, rank-biserial r=%.3f",
+  med_d, n_d, med_m, n_m, wt$p.value, rbis))
+
+q15_lab <- tibble(lab = sprintf(
+  "Wilcoxon rank-sum  p %s\nrank-biserial r = %.3f\n(desktop n = %s, mobile n = %s users)",
+  if_else(wt$p.value < 1e-3, "< 0.001", sprintf("= %.3f", wt$p.value)),
+  rbis, scales::comma(n_d), scales::comma(n_m)))
+
+save_fig(
+  ggplot(plat, aes(platform, optimality, fill = platform)) +
+    geom_boxplot(alpha = 0.5, outlier.alpha = 0.08, linewidth = 0.4, show.legend = FALSE) +
+    geom_label(data = q15_lab, aes(x = -Inf, y = -Inf, label = lab), inherit.aes = FALSE,
+               hjust = 0, vjust = 0, family = "mono", size = 2.8, color = "grey20",
+               fill = alpha("white", 0.7), label.size = 0, lineheight = 0.95) +
+    scale_fill_manual(values = c(desktop = "#5b8cff", mobile = "#f5b841")) +
+    coord_cartesian(ylim = c(0.6, 1)) +
+    labs(title = "Optimality by device: mobile vs desktop",
+         subtitle = "optimality = optimal moves / player moves (1.0 = the Concorde optimum). Boxes show the per-trace distribution.\nWilcoxon tests one value per user (mean optimality over completed-all players, so the round set is fixed);\nrank-biserial r is the effect size - with thousands of users a tiny gap still reaches significance, so read r for magnitude.",
+         x = NULL, y = "optimality") +
+    theme_mow,
+  "q15a_optimality_by_platform.png", 8, 6)
+
+# --- optimality across levels, split by platform (mirrors Q5) ----------------
+plat_round <- plat %>%
+  group_by(platform, level) %>%
+  summarise(mean = mean(optimality), se = sd(optimality) / sqrt(n()),
+            n = n(), .groups = "drop")
+message("\nQ15 mean optimality by platform x level:")
+print(plat_round %>% mutate(mean = round(mean, 4), se = round(se, 4)))
+
+# per-level Wilcoxon (per-trace here: shows where any device gap actually lands)
+q15_level_tests <- plat %>%
+  group_by(level) %>%
+  summarise(p = tryCatch(wilcox.test(optimality ~ platform)$p.value, error = function(e) NA_real_),
+            d_median = median(optimality[platform == "desktop"]),
+            m_median = median(optimality[platform == "mobile"]), .groups = "drop") %>%
+  mutate(gap = d_median - m_median)
+message("\nQ15 per-level desktop-vs-mobile optimality (per-trace Wilcoxon):")
+print(q15_level_tests %>% mutate(across(where(is.numeric), ~ signif(.x, 3))))
+
+save_fig(
+  ggplot(plat_round, aes(level, mean, color = platform, group = platform)) +
+    geom_line(linewidth = 1.1) +
+    geom_pointrange(aes(ymin = mean - 1.96 * se, ymax = mean + 1.96 * se), fatten = 2.5) +
+    scale_color_manual(values = c(desktop = "#5b8cff", mobile = "#f5b841"), name = NULL) +
+    coord_cartesian(ylim = c(0.6, 1)) +
+    labs(title = "Optimality across levels: mobile vs desktop",
+         subtitle = "Mean optimality with 95% CI per round, split by device. Larger bonus grids widen any control-scheme gap.",
+         x = NULL, y = "optimality") +
+    theme_mow + theme(legend.position = "top"),
+  "q15b_optimality_by_platform_across_levels.png", 9, 6)
+
+# ===========================================================================
 # Summary stats -> console
 # ===========================================================================
 by_round <- m %>% group_by(level) %>%

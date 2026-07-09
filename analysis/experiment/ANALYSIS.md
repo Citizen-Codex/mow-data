@@ -15,7 +15,7 @@ grid; rounds grow from 6×6 (tutorial/round1) to 14×14 (bonus3).
 
 ```
 build_optimal.py   ->  optimal_paths.csv      exact Concorde optimal path + move count per round
-analysis.R         ->  figures/q2..q14*.png   ALL static figures + summary stats -> console;
+analysis.R         ->  figures/q2..q15*.png   ALL static figures + summary stats -> console;
                                               derives every per-trace/per-cell/per-move metric
                                               in R straight from the raw CSVs + optimal_paths.csv
 build_metrics.py   ->  cohort_data.js         window.COHORT for the interactive explorer
@@ -45,7 +45,7 @@ required. The project normally uses `uv`; any env with those libs works.
 
 ```bash
 python build_optimal.py     # solve exact optima -> optimal_paths.csv (only when levels change)
-Rscript analysis.R          # all figures (q2-q14) + summary stats; reads raw CSVs + optimal_paths.csv
+Rscript analysis.R          # all figures (q2-q15) + summary stats; reads raw CSVs + optimal_paths.csv
 python build_metrics.py     # rebuild the explorer's cohort_data.js (only for cohort_explorer.html)
 open cohort_explorer.html   # interactive
 ```
@@ -139,6 +139,17 @@ open cohort_explorer.html   # interactive
     difficulty as skill — some rounds force overlaps. Per round (`q11`) the spread
     widens on the larger bonus grids; bonus1 is the hardest (median 0.905). The
     full by-round table prints to the console when you run `analysis.R`.
+11. **Mobile vs desktop: no meaningful score gap** (`q15a`, `q15b`). Despite the
+    very different control schemes (swipe/drag vs keyboard), device does **not**
+    drive optimality. On the headline per-user test (mean optimality, one platform
+    per user, `completed_all` pool, non-parametric because optimality is
+    bounded/left-skewed) desktop edges mobile by a hair — medians 0.910 vs 0.906,
+    Wilcoxon p ≈ 0.13, rank-biserial r ≈ -0.03 (negligible). Across levels
+    (`q15b`) the two curves are essentially on top of each other at every round;
+    per-level per-trace Wilcoxon flags only round1/round2 as "significant" (p ≈
+    0.002 / 0.04) purely on sample size — the median gaps there are ~0, and the
+    bonus rounds (where any control-scheme penalty should show) are clearly
+    non-significant. Bottom line: players play about as well on either device.
 
 ## Interactive explorer
 
